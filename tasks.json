@@ -1,0 +1,27 @@
+{
+  "tasks": [
+    {
+      "id": "task-001",
+      "skills": ["echo", "timestamp"],
+      "payload": {
+        "message": "Hello from Khursheed."
+      }
+    },
+    {
+      "id": "task-002",
+      "skills": ["timestamp"],
+      "payload": {}
+    },
+    {
+      "id": "task-003",
+      "skills": ["lead_scout"],
+      "interval_days": 3,
+      "payload": {
+        "queries": [
+          "Fractional CTO roles in Jacksonville",
+          "Warehouse optimization consulting"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "accounts": [
+    {
+      "name": "yahoo",
+      "host": "imap.mail.yahoo.com",
+      "username": "techvizpro@yahoo.com",
+      "password_env": "YAHOO_PASSWORD"
+    }
+  ]
+}
