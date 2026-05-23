@@ -1,0 +1,44 @@
+# Pre-commit hooks for code quality enforcement
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff Linter
+        entry: ruff check
+        language: system
+        types: [python]
+        args: [--fix]
+      
+      - id: ruff-format
+        name: Ruff Formatter  
+        entry: ruff format
+        language: system
+        types: [python]
+        
+      - id: no-direct-sys-path
+        name: Prevent direct sys.path manipulation
+        entry: sys\.path\.(insert|append)
+        language: pygrep
+        types: [python]
+        exclude: '^(setup\.py|conftest\.py)$'
+        
+      - id: no-global-state
+        name: Prevent global mutable state
+        entry: '^[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*(?!.*\bdef\b|\bclass\b|\bif\b|\bfor\b)'
+        language: pygrep
+        types: [python]
+        files: '(?!test_|conftest\.py|__init__\.py).*\.py$'
+        exclude: '^(constants\.py|config\.py|settings\.py)$'
+        
+      - id: no-bare-except
+        name: Prevent bare except clauses
+        entry: 'except:'
+        language: pygrep
+        types: [python]
+        
+      - id: no-print-statements
+        name: Prevent print statements in production code
+        entry: '\bprint\s*\('
+        language: pygrep
+        types: [python]
+        exclude: '^(tests/|scripts/|debug\.py|__main__\.py)'

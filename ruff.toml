@@ -1,0 +1,102 @@
+# Ruff configuration for Enaam/Khursheed codebase
+# Enforces code quality and prevents architectural smells
+
+# Target Python 3.12+
+target-version = "py312"
+
+# Enable more rules for stricter quality
+line-length = 120
+indent-width = 4
+
+[lint]
+# Enable comprehensive rule sets
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings  
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "ANN",  # flake8-annotations
+    "S",    # flake8-bandit
+    "BLE",  # flake8-blind-except
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "EM",   # flake8-errmsg
+    "ICN",  # flake8-import-conventions
+    "PIE",  # flake8-pie
+    "T20",  # flake8-print
+    "Q",    # flake8-quotes
+    "RSE",  # flake8-raise
+    "RET",  # flake8-return
+    "SIM",  # flake8-simplify
+    "TID",  # flake8-tidy-imports
+    "ARG",  # flake8-unused-arguments
+    "PTH",  # flake8-use-pathlib
+    "ERA",  # eradicate
+    "PGH",  # pygrep-hooks
+    "PL",   # pylint
+    "TRY",  # tryceratops
+    "PERF", # perflint
+    "RUF",  # ruff-specific rules
+]
+
+# Ignore specific rules that conflict with our current architecture
+ignore = [
+    "ANN101",  # Missing type annotation for self in method
+    "ANN102",  # Missing type annotation for cls in classmethod
+    "S101",    # Use of assert detected (we use assert in tests)
+    "PLR0913", # Too many arguments (will refactor gradually)
+    "PLR0912", # Too many branches (will refactor gradually)
+    "PLR0915", # Too many statements (will refactor gradually)
+    "PLR2004", # Magic value used in comparison (will create constants)
+    "TRY003",  # Avoid specifying long messages outside the exception class (temporary)
+    "EM102",   # Exception must not use an f-string literal (temporary)
+    "T201",    # Print statements (temporary for development)
+]
+
+# Allow autofix for safe rules
+fixable = [
+    "I",       # isort
+    "F401",    # Remove unused imports
+    "UP",      # pyupgrade  
+    "SIM",     # simplify
+    "RUF100",  # Remove unused noqa
+]
+
+unfixable = [
+    "F841",    # Unused variables (manual review needed)
+    "ERA",     # Commented-out code (manual review needed)
+]
+
+[lint.per-file-ignores]
+# Test files can have different rules
+"tests/**/*.py" = [
+    "S101",    # Use of assert
+    "PLR0913", # Too many arguments in test functions
+    "ANN",     # Type annotations not required in tests
+]
+
+# Legacy files get more lenient rules during transition
+"khursheed.py" = ["ANN"]
+"hey_eman_app.py" = ["ANN"]
+"llm_agent.py" = ["ANN"]
+"manager.py" = ["ANN"]
+"skills/*.py" = ["ANN"]
+
+[lint.isort]
+# Import organization
+known-first-party = ["enaam"]
+force-single-line = true
+lines-after-imports = 2
+
+[format]
+# Consistent formatting
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+# Docstring formatting
+docstring-code-format = true
+docstring-code-line-length = 60
