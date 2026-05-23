@@ -1,7 +1,10 @@
 import json
 import os
+import ssl
 import urllib.request
 from typing import Any, Dict
+
+import certifi
 
 
 def tavily_search(
@@ -26,5 +29,6 @@ def tavily_search(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=30, context=ssl_ctx) as response:
         return json.loads(response.read().decode("utf-8"))

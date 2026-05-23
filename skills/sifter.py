@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import imaplib
+from datetime import datetime, timedelta, timezone
 
 from skills.base import Skill
 
@@ -50,10 +51,11 @@ class SifterSkill(Skill):
 
     def _process_account(self, account: MailAccount, max_messages: int) -> List[Dict[str, Any]]:
         categorized: List[Dict[str, Any]] = []
+        since_date = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%d-%b-%Y")
         with imaplib.IMAP4_SSL(account.host) as imap:
             imap.login(account.username, account.password)
             imap.select("INBOX")
-            status, data = imap.search(None, "ALL")
+            status, data = imap.search(None, "SINCE", since_date)
             if status != "OK":
                 return categorized
             message_ids = data[0].split()
@@ -178,6 +180,17 @@ class SifterSkill(Skill):
                     host=os.getenv("YAHOO_IMAP_HOST", "imap.mail.yahoo.com"),
                     username=yahoo_email,
                     password=yahoo_password,
+                )
+            )
+        yahoo_email_2 = os.getenv("YAHOO_EMAIL_2")
+        yahoo_password_2 = os.getenv("YAHOO_PASSWORD_2")
+        if yahoo_email_2 and yahoo_password_2:
+            accounts.append(
+                MailAccount(
+                    name="yahoo2",
+                    host=os.getenv("YAHOO_IMAP_HOST", "imap.mail.yahoo.com"),
+                    username=yahoo_email_2,
+                    password=yahoo_password_2,
                 )
             )
         gmail_email = os.getenv("GMAIL_EMAIL")

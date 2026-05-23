@@ -32,8 +32,14 @@ class HeyEmanAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are Hey Eman, a concise executive assistant. "
-                    "Use tools to perform tasks when helpful, then summarize results."
+                    "You are Hey Eman, a concise executive assistant for Khursheed. "
+                    "Use tools to perform tasks when asked, then summarize results clearly. "
+                    "Available skills (use exact names only):\n"
+                    "  - sifter: checks email inbox (Yahoo/Gmail), categorizes messages, extracts expenses\n"
+                    "  - lead_scout: searches the web for business leads (Fractional CTO, warehouse consulting)\n"
+                    "  - timestamp: records the current UTC timestamp\n"
+                    "  - echo: echoes a message payload\n"
+                    "Never invent skill names. Always use run_skill with the exact name from the list above."
                 ),
             },
             {"role": "user", "content": query},
@@ -102,15 +108,15 @@ class HeyEmanAgent:
         ]
 
     def _handle_tool_calls(self, response, messages: List[Dict[str, str]]) -> str:
-        tool_calls = response.output or []
-        logger.debug("Received %d output items", len(tool_calls))
-        if not tool_calls:
+        output_items = response.output or []
+        logger.debug("Received %d output items", len(output_items))
+
+        fn_calls = [item for item in output_items if item.type == "function_call"]
+        if not fn_calls:
             return response.output_text or "No response available."
 
         tool_results = []
-        for item in tool_calls:
-            if item.type != "tool_call":
-                continue
+        for item in fn_calls:
             name = item.name
             args = json.loads(item.arguments or "{}")
             if name == "run_skill":
@@ -125,28 +131,26 @@ class HeyEmanAgent:
                 result = {"error": f"Unknown tool '{name}'."}
             tool_results.append(
                 {
-                    "type": "tool_result",
-                    "tool_call_id": item.id,
-                    "content": json.dumps(result),
+                    "type": "function_call_output",
+                    "call_id": item.call_id,
+                    "output": json.dumps(result),
                 }
             )
 
-        follow_up_input = list(messages)
-        follow_up_input.extend(
-            {
-                "role": "tool",
-                "tool_call_id": result["tool_call_id"],
-                "content": result["content"],
-            }
-            for result in tool_results
-        )
         logger.debug("Submitting %d tool results", len(tool_results))
         follow_up = self._client.responses.create(
             model=self._model,
-            input=follow_up_input,
+            previous_response_id=response.id,
+            input=tool_results,
             tools=self._tool_definitions(),
         )
-        return follow_up.output_text or "Task completed."
+        text = follow_up.output_text
+        if not text:
+            # Flatten any text items from output directly
+            text = " ".join(
+                item.text for item in (follow_up.output or []) if hasattr(item, "text") and item.text
+            )
+        return text or "Done. Ask for the executive summary for details."
 
     def _run_skill(self, skill_name: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not skill_name:

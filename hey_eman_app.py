@@ -74,7 +74,7 @@ def main() -> None:
     st.title("Hey Eman")
     st.caption("Lightweight command center for Khursheed.")
 
-    load_dotenv()
+    load_dotenv(override=True)
     manager = _init_manager()
     agent = _init_agent(manager)
 
