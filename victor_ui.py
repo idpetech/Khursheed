@@ -13,8 +13,18 @@ import pandas as pd
 
 # Import Victor orchestrator and related components
 from victor_orchestrator import get_orchestrator, execute_command
-from enaam.core.chat_context import ChatContextManager
 from llm_agent import HeyEmanAgent
+
+# Import chat context with fallback
+try:
+    from enaam.core.chat_context import ChatContextManager
+except ImportError:
+    # Provide a minimal fallback if imports fail
+    class ChatContextManager:
+        def session_exists(self, session_id): return False
+        def create_session(self, session_id, user_id): pass
+        def get_session_history(self, session_id): return []
+        def add_turn(self, **kwargs): pass
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -53,12 +63,11 @@ def render_chat_interface():
     session_id = st.session_state.chat_session_id
     chat_context = st.session_state.chat_context
     
-    # Create chat session if not exists
-    if not chat_context.session_exists(session_id):
-        chat_context.create_session(session_id, "streamlit_user")
+    # Get or create chat session
+    session = chat_context.get_or_create_session(session_id, "streamlit_user")
     
     # Display chat history
-    chat_history = chat_context.get_session_history(session_id)
+    chat_history = session.turns
     
     # Create chat container
     chat_container = st.container()
@@ -66,9 +75,14 @@ def render_chat_interface():
     with chat_container:
         for turn in chat_history:
             with st.chat_message("user"):
-                st.write(turn['user_input'])
+                st.write(turn.user_input)
             with st.chat_message("assistant"):
-                st.write(turn['assistant_response'])
+                # Handle both dict and string responses
+                if isinstance(turn.assistant_response, dict):
+                    response_text = turn.assistant_response.get('content', str(turn.assistant_response))
+                else:
+                    response_text = str(turn.assistant_response)
+                st.write(response_text)
     
     # Chat input
     if prompt := st.chat_input("Ask Enaam anything..."):
@@ -95,8 +109,7 @@ def render_chat_interface():
                     st.write(response)
                     
                     # Save to chat context
-                    chat_context.add_turn(
-                        session_id=session_id,
+                    session.add_turn(
                         user_input=prompt,
                         assistant_response=response,
                         metadata={"interface": "streamlit_ui"}
@@ -105,8 +118,7 @@ def render_chat_interface():
                 except Exception as e:
                     error_msg = f"Error processing request: {str(e)}"
                     st.error(error_msg)
-                    chat_context.add_turn(
-                        session_id=session_id,
+                    session.add_turn(
                         user_input=prompt,
                         assistant_response=error_msg,
                         metadata={"interface": "streamlit_ui", "error": True}
@@ -481,8 +493,8 @@ def render_system_status():
 def main():
     """Main Victor UI application"""
     st.set_page_config(
-        page_title="Victor Command Center",
-        page_icon="🎯",
+        page_title="Enaam Command Center",
+        page_icon="🤖",
         layout="wide",
         initial_sidebar_state="expanded"
     )
@@ -494,8 +506,8 @@ def main():
     init_session_state()
     
     # Sidebar navigation
-    st.sidebar.title("🎯 Victor Command Center")
-    st.sidebar.markdown("Unified assistant control panel")
+    st.sidebar.title("🤖 Enaam Command Center")
+    st.sidebar.markdown("Unified AI assistant control panel")
     
     page = st.sidebar.selectbox(
         "Navigate to:",
@@ -545,7 +557,7 @@ def main():
     # Footer
     st.markdown("---")
     st.markdown(
-        "**Victor Command Center** - Unified assistant control panel | "
+        "**Enaam Command Center** - Unified AI assistant control panel | "
         f"Session: `{st.session_state.chat_session_id}` | "
         f"Last updated: {datetime.now().strftime('%H:%M:%S')}"
     )

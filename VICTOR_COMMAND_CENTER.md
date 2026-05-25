@@ -1,8 +1,8 @@
-# 🎯 Victor Command Center
+# 🤖 Enaam Command Center
 
 ## Overview
 
-The Victor Command Center is a unified, stable assistant control system that consolidates all Khursheed/Enaam functionality through a single orchestration layer. This implementation follows Victor-style principles: simpler, stable, and traceable.
+The Enaam Command Center is a unified, stable AI assistant control system that consolidates all Khursheed/Enaam functionality through a single orchestration layer. This implementation follows Victor-style principles: simpler, stable, and traceable.
 
 ## Key Features
 
@@ -143,7 +143,7 @@ Aggregates all events from skill_runs, pending_actions, notification_log, and sc
 
 ## Usage
 
-### Victor Command Center UI
+### Enaam Command Center UI
 
 Access the unified interface at **http://localhost:8501**
 
@@ -334,4 +334,4 @@ The Victor system maintains backward compatibility:
 
 ---
 
-**Victor Command Center** - Simple, stable, traceable assistant orchestration 🎯
+**Enaam Command Center** - Simple, stable, traceable AI assistant orchestration 🤖
