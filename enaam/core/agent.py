@@ -4,19 +4,52 @@ Enaam Core Agent
 Chief-of-Staff orchestration layer that routes requests and manages execution.
 """
 
-from typing import Dict, Any
+from typing import Any, Dict, Optional
+
+from ..integrations.khursheed_bridge import KhursheedBridge
+from .constants import MagicStringConstants
+from .container import resolve_optional
+from .enums import ResponseStatus
+from .error_handler import get_error_logger, log_and_suppress
+from .exceptions import EnaamError
+from .logging import EnaamLogger
 from .router import EnaamRouter
 from .state import EnaamState
-from ..integrations.khursheed_bridge import KhursheedBridge
 
 
 class EnaamAgent:
-    """Core agent for Enaam Chief-of-Staff system"""
+    """
+    Core agent for Enaam Chief-of-Staff system.
     
-    def __init__(self):
-        self.router = EnaamRouter()
-        self.state = EnaamState()
-        self.khursheed_bridge = KhursheedBridge()
+    Uses dependency injection for all external dependencies to eliminate
+    global state and improve testability.
+    """
+    
+    def __init__(
+        self, 
+        logger: Optional[EnaamLogger] = None,
+        router: Optional[EnaamRouter] = None,
+        state: Optional[EnaamState] = None,
+        khursheed_bridge: Optional[KhursheedBridge] = None
+    ) -> None:
+        """
+        Initialize EnaamAgent with dependency injection.
+        
+        Args:
+            logger: Logger instance. If None, resolves from container.
+            router: Router instance. If None, creates new instance.
+            state: State instance. If None, creates new instance.
+            khursheed_bridge: Bridge instance. If None, creates with logger.
+        """
+        self._logger = logger or resolve_optional(EnaamLogger) or self._create_fallback_logger()
+        self.router = router or EnaamRouter()
+        self.state = state or EnaamState()
+        self.khursheed_bridge = khursheed_bridge or KhursheedBridge(self._logger)
+    
+    def _create_fallback_logger(self) -> EnaamLogger:
+        """Create fallback logger when container resolution fails."""
+        from .logging import create_logger
+        return create_logger()
     
     def process_request(self, request: str) -> Dict[str, Any]:
         """
@@ -66,7 +99,7 @@ class EnaamAgent:
             return action_map[action]()
         else:
             return {
-                "status": "error",
+                "status": ResponseStatus.ERROR.value,
                 "source": "enaam",
                 "action": "unknown_khursheed_action",
                 "data": {"error": f"Unknown Khursheed action: {action}"},
@@ -76,7 +109,7 @@ class EnaamAgent:
     def _handle_general_request(self, routing: Dict[str, Any]) -> Dict[str, Any]:
         """Handle general requests not routed to Khursheed"""
         return {
-            "status": "success",
+            "status": ResponseStatus.SUCCESS.value,
             "source": "enaam", 
             "action": "general_response",
             "data": {
@@ -98,7 +131,7 @@ class EnaamAgent:
     def _handle_unknown_request(self, routing: Dict[str, Any]) -> Dict[str, Any]:
         """Handle unknown/unroutable requests"""
         return {
-            "status": "error",
+            "status": ResponseStatus.ERROR.value,
             "source": "enaam",
             "action": "unknown_request",
             "data": {
@@ -108,10 +141,11 @@ class EnaamAgent:
             "next_steps": ["Rephrase request", "Use specific action keywords"]
         }
     
+    @log_and_suppress(default_return={"status": ResponseStatus.ERROR.value, "data": {MagicStringConstants.ERROR_LITERAL: "Failed to get status"}})
     def get_status(self) -> Dict[str, Any]:
         """Get current agent status"""
         return {
-            "status": "success",
+            "status": ResponseStatus.SUCCESS.value,
             "source": "enaam",
             "action": "status_check", 
             "data": {

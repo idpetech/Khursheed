@@ -1,237 +1,142 @@
 """
-MCP Handlers - Request processing and response formatting
+MCP Handlers - Orchestrates focused components for request processing
 
-Handles routing, formatting, and response generation.
-NO BUSINESS LOGIC - only routing, formatting, and exposing.
+Uses composition to coordinate validation, routing, and formatting.
+Single responsibility: Request orchestration only.
 """
 
-from typing import Dict, Any, Optional
-import sys
-from pathlib import Path
-
-# Add parent directories to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from .schemas import (
-    MCPRequest, MCPResponse, ResponseType, MCPMethod,
-    SkillRequest, BridgeRequest, ChatQueryRequest,
-    create_mcp_response, create_email_response, create_chat_response, create_json_response
-)
+from typing import Any, Optional
 
 # Import Enaam components
-from enaam.core.agent import EnaamAgent
-from enaam.integrations.khursheed_bridge import KhursheedBridge
+from ..core.agent import EnaamAgent
+from ..core.chat_context import ChatContextManager
+from ..core.container import resolve_optional
+from ..core.config_loader import get_config, EnaamConfig
+from ..core.error_handler import get_error_logger
+from ..core.exceptions import (
+    MCPError, 
+    ValidationError, 
+    create_error_response,
+    create_safe_error_response,
+    log_error_safely,
+    safe_handle_external_error
+)
+from ..core.logging import EnaamLogger
+from ..integrations.khursheed_bridge import KhursheedBridge
+from .schemas import MCPRequest, MCPResponse, create_mcp_response
+from .request_validator import RequestValidator
+from .response_formatter import ResponseFormatter
+from .request_router import RequestRouter
 
 
 class MCPHandler:
-    """MCP request handler - routes and formats only"""
+    """
+    MCP request handler - orchestrates focused components.
     
-    def __init__(self):
-        self.agent = EnaamAgent()
-        self.bridge = KhursheedBridge()
+    Uses composition to coordinate validation, routing, and formatting.
+    Single responsibility: Request orchestration only.
+    """
+    
+    def __init__(
+        self, 
+        logger: Optional[EnaamLogger] = None,
+        agent: Optional[EnaamAgent] = None,
+        bridge: Optional[KhursheedBridge] = None,
+        config: Optional[EnaamConfig] = None,
+        validator: Optional[RequestValidator] = None,
+        formatter: Optional[ResponseFormatter] = None,
+        router: Optional[RequestRouter] = None,
+        context_manager: Optional[ChatContextManager] = None
+    ) -> None:
+        """
+        Initialize MCPHandler with dependency injection and chat context.
+        
+        Args:
+            logger: Logger instance. If None, resolves from container.
+            agent: Agent instance. If None, creates with logger.
+            bridge: Bridge instance. If None, creates with logger.
+            config: Configuration instance. If None, loads from global config.
+            validator: Request validator. If None, creates new instance.
+            formatter: Response formatter. If None, creates new instance.
+            router: Request router. If None, creates with agent and bridge.
+            context_manager: Chat context manager. If None, creates new instance.
+        """
+        self._config = config or get_config()
+        self._logger = logger or resolve_optional(EnaamLogger) or self._create_fallback_logger()
+        self._error_logger = get_error_logger('mcp_handlers')
+        self.agent = agent or EnaamAgent(self._logger)
+        self.bridge = bridge or KhursheedBridge(self._logger, self._config.email)
+        
+        # Initialize chat context management
+        self._context_manager = context_manager or ChatContextManager(logger=self._logger)
+        
+        # Initialize focused components with context awareness
+        self._validator = validator or RequestValidator()
+        self._formatter = formatter or ResponseFormatter()
+        self._router = router or RequestRouter(self.agent, self.bridge, self._context_manager)
+    
+    def _create_fallback_logger(self) -> EnaamLogger:
+        """Create fallback logger when container resolution fails."""
+        from enaam.core.logging import create_logger
+        return create_logger()
     
     def handle_request(self, request: MCPRequest) -> MCPResponse:
-        """Route MCP request to appropriate handler"""
+        """Orchestrate request processing through focused components"""
         try:
-            # Route based on method
-            if request.method == MCPMethod.RUN_SKILL:
-                result = self._handle_run_skill(request.params)
-            elif request.method == MCPMethod.RUN_BRIDGE:
-                result = self._handle_run_bridge(request.params)
-            elif request.method == MCPMethod.RUN_WEEKLY_DIGEST:
-                result = self._handle_run_weekly_digest()
-            elif request.method == MCPMethod.RUN_LEAD_SCAN:
-                result = self._handle_run_lead_scan()
-            elif request.method == MCPMethod.CHAT_QUERY:
-                result = self._handle_chat_query(request.params)
-            else:
-                raise ValueError(f"Unsupported method: {request.method}")
+            self._error_logger.debug("Handling MCP request: %s", request.method)
             
-            # Format response based on requested type
-            formatted_result = self._format_response(result, request.response_type)
+            # Step 1: Validate request using focused validator
+            self._validator.validate_request(request)
+            self._validator.validate_response_type(request.response_type)
+            
+            # Step 2: Route request to appropriate handler
+            result = self._router.route_request(request)
+            
+            # Step 3: Format response using focused formatter
+            formatted_result = self._formatter.format_response(result, request.response_type)
             
             return create_mcp_response(request.id, formatted_result)
             
+        except (ValidationError, MCPError) as e:
+            # Known errors - log safely and return sanitized error response
+            correlation_id = log_error_safely(
+                e, 
+                self._error_logger, 
+                context={
+                    'method': getattr(request, 'method', 'unknown'),
+                    'request_id': getattr(request, 'id', None),
+                    'response_type': getattr(request, 'response_type', None)
+                }
+            )
+            
+            # Create safe error response
+            correlation_id, safe_response = create_safe_error_response(
+                e, 
+                context={'operation': 'mcp_request_handling'}
+            )
+            
+            return create_mcp_response(request.id, error=safe_response.get('error'))
+            
         except Exception as e:
-            error = {
-                "code": "HANDLER_ERROR",
-                "message": str(e),
-                "method": request.method
-            }
-            return create_mcp_response(request.id, error=error)
-    
-    def _handle_run_skill(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle skill execution request"""
-        skill_name = params.get("skill_name")
-        skill_input = params.get("input", {})
-        
-        if not skill_name:
-            raise ValueError("Missing 'skill_name' parameter")
-        
-        # Available skills from Khursheed bridge
-        available_skills = {
-            "sifter": lambda: self.bridge.email_summary(),
-            "lead_scout": lambda: self.bridge.lead_scan(),
-            "echo": lambda: {"status": "success", "source": "khursheed", "action": "echo", "data": skill_input, "next_steps": []},
-            "timestamp": lambda: {"status": "success", "source": "khursheed", "action": "timestamp", "data": {"timestamp": "2026-05-23T18:54:27.419464+00:00"}, "next_steps": []}
-        }
-        
-        if skill_name not in available_skills:
-            raise ValueError(f"Unknown skill: {skill_name}")
-        
-        return available_skills[skill_name]()
-    
-    def _handle_run_bridge(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle Khursheed bridge function request"""
-        function_name = params.get("function_name")
-        
-        if not function_name:
-            raise ValueError("Missing 'function_name' parameter")
-        
-        # Available bridge functions
-        bridge_functions = {
-            "email_summary": self.bridge.email_summary,
-            "lead_scan": self.bridge.lead_scan,
-            "weekly_digest": self.bridge.weekly_digest,
-            "executive_summary": self.bridge.executive_summary,
-            "run_scheduled_tasks": self.bridge.run_scheduled_tasks,
-            "weekly_monday_9am_digest": self.bridge.weekly_monday_9am_digest,
-            "lead_generation_run": self.bridge.lead_generation_run,
-            "email_triage_run": self.bridge.email_triage_run,
-            "get_execution_logs": self.bridge.get_execution_logs
-        }
-        
-        if function_name not in bridge_functions:
-            raise ValueError(f"Unknown bridge function: {function_name}")
-        
-        return bridge_functions[function_name]()
-    
-    def _handle_run_weekly_digest(self) -> Dict[str, Any]:
-        """Handle weekly digest request - direct shortcut"""
-        return self.bridge.weekly_digest()
-    
-    def _handle_run_lead_scan(self) -> Dict[str, Any]:
-        """Handle lead scan request - direct shortcut"""
-        return self.bridge.lead_scan()
-    
-    def _handle_chat_query(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle chat query request"""
-        query = params.get("query")
-        context = params.get("context", {})
-        
-        if not query:
-            raise ValueError("Missing 'query' parameter")
-        
-        # Process through Enaam agent
-        agent_response = self.agent.process_request(query)
-        
-        # Add context if provided
-        if context:
-            agent_response["context"] = context
-        
-        return agent_response
-    
-    def _format_response(self, result: Dict[str, Any], response_type: ResponseType) -> Dict[str, Any]:
-        """Format response based on requested type"""
-        if response_type == ResponseType.JSON:
-            return self._format_as_json(result)
-        elif response_type == ResponseType.EMAIL:
-            return self._format_as_email(result)
-        elif response_type == ResponseType.CHAT:
-            return self._format_as_chat(result)
-        else:
-            raise ValueError(f"Unknown response type: {response_type}")
-    
-    def _format_as_json(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Format response as JSON"""
-        return create_json_response(
-            data=result,
-            status=result.get("status", "success"),
-            source=result.get("source", "enaam")
-        ).__dict__
-    
-    def _format_as_email(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Format response as email"""
-        action = result.get("action", "unknown")
-        data = result.get("data", {})
-        
-        # Generate email subject based on action
-        subject_map = {
-            "weekly_digest": "Weekly Executive Summary",
-            "weekly_monday_9am_digest": "Weekly Monday Digest",
-            "executive_summary": "Daily Executive Summary",
-            "lead_scan": "Lead Discovery Results",
-            "lead_generation_run": "Lead Generation Report",
-            "email_summary": "Email Triage Summary",
-            "email_triage_run": "Email Processing Report",
-            "run_scheduled_tasks": "Scheduled Tasks Completed"
-        }
-        
-        subject = subject_map.get(action, f"Enaam Report: {action}")
-        
-        # Generate email body
-        if "summary" in data:
-            body = data["summary"]
-        elif "message" in data:
-            body = data["message"]
-        else:
-            # Create structured email body
-            body_parts = [f"Action: {action}"]
+            # Unexpected errors - log safely with full context
+            correlation_id = log_error_safely(
+                e, 
+                self._error_logger, 
+                context={
+                    'method': getattr(request, 'method', 'unknown'),
+                    'request_id': getattr(request, 'id', None),
+                    'operation': 'mcp_request_handling_unexpected'
+                }
+            )
             
-            if result.get("status") == "success":
-                body_parts.append("Status: ✅ Success")
-            else:
-                body_parts.append("Status: ❌ Error")
+            # Create safe error response for unexpected errors
+            correlation_id, safe_response = create_safe_error_response(
+                e, 
+                context={'operation': 'mcp_unexpected_error'}
+            )
             
-            # Add key data points
-            for key, value in data.items():
-                if key not in ["summary", "message", "error"]:
-                    body_parts.append(f"{key.replace('_', ' ').title()}: {value}")
-            
-            # Add next steps
-            next_steps = result.get("next_steps", [])
-            if next_steps:
-                body_parts.append("\nNext Steps:")
-                for step in next_steps:
-                    body_parts.append(f"• {step}")
-            
-            body = "\n".join(body_parts)
-        
-        return create_email_response(subject=subject, body=body).__dict__
+            return create_mcp_response(request.id, error=safe_response.get('error'))
     
-    def _format_as_chat(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Format response as chat message"""
-        action = result.get("action", "unknown")
-        data = result.get("data", {})
-        status = result.get("status", "unknown")
-        
-        # Generate chat message
-        if status == "error":
-            message = f"❌ Error in {action}: {data.get('error', 'Unknown error')}"
-            suggestions = ["Try again", "Check configuration", "Contact support"]
-        else:
-            if "summary" in data:
-                # For summaries, provide a condensed version
-                summary = data["summary"]
-                if len(summary) > 300:
-                    message = f"✅ {action} completed:\n\n{summary[:300]}..."
-                else:
-                    message = f"✅ {action} completed:\n\n{summary}"
-            elif "message" in data:
-                message = f"✅ {data['message']}"
-            else:
-                message = f"✅ {action} completed successfully"
-            
-            # Add suggestions based on next steps
-            suggestions = result.get("next_steps", [])[:3]  # Limit to 3 suggestions
-        
-        # Add metadata
-        metadata = {
-            "action": action,
-            "source": result.get("source", "enaam"),
-            "status": status,
-            "execution_time": data.get("execution_time_ms")
-        }
-        
-        return create_chat_response(message=message, suggestions=suggestions, metadata=metadata).__dict__
+    # All handler methods removed - logic moved to RequestRouter
+    # All formatting methods removed - logic moved to ResponseFormatter
+    # Validation logic removed - moved to RequestValidator

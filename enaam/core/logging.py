@@ -1,96 +1,147 @@
 """
 Enaam State Logging
 
-Logs all Enaam function executions to SQLite database.
+Thread-safe logging for all Enaam function executions to SQLite database.
 """
 
-import sqlite3
 import json
-from datetime import datetime, timezone
+import sqlite3
+import threading
+from datetime import UTC
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any
+
+from .constants import DatabaseConstants, PathConstants
+from .error_handler import handle_database_errors, get_error_logger
+from .exceptions import DatabaseError
+
+
+class ThreadLocalConnection:
+    """Thread-local SQLite connection manager"""
+    
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._local = threading.local()
+        self._lock = threading.RLock()
+    
+    def get_connection(self) -> sqlite3.Connection:
+        """Get or create thread-local database connection"""
+        if not hasattr(self._local, 'connection'):
+            with self._lock:
+                # Double-check after acquiring lock
+                if not hasattr(self._local, 'connection'):
+                    self._local.connection = sqlite3.connect(
+                        self.db_path,
+                        timeout=DatabaseConstants.DEFAULT_TIMEOUT,  # 30 second timeout for busy database
+                        isolation_level=DatabaseConstants.DEFERRED_ISOLATION  # Better concurrency
+                    )
+                    # Enable WAL mode for better concurrent access
+                    self._local.connection.execute(DatabaseConstants.PRAGMA_JOURNAL_MODE_WAL)
+                    self._local.connection.execute(DatabaseConstants.PRAGMA_SYNCHRONOUS_NORMAL)
+        return self._local.connection
+    
+    def close_all(self) -> None:
+        """Close all thread-local connections"""
+        if hasattr(self._local, 'connection'):
+            self._local.connection.close()
+            delattr(self._local, 'connection')
 
 
 class EnaamLogger:
-    """Logger for tracking Enaam function executions"""
+    """Thread-safe logger for tracking Enaam function executions"""
     
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         if db_path is None:
             # Default to data directory in project root
-            project_root = Path(__file__).parent.parent.parent
-            data_dir = project_root / "data"
+            data_dir = PathConstants.get_data_dir()
             data_dir.mkdir(exist_ok=True)
-            db_path = str(data_dir / "enaam_runs.db")
+            db_path = str(data_dir / DatabaseConstants.ENAAM_RUNS_DB)
         
         self.db_path = db_path
-        # Use check_same_thread=False to allow multi-threaded access
-        self._connection = sqlite3.connect(self.db_path, check_same_thread=False)
+        self._connection_manager = ThreadLocalConnection(db_path)
+        self._init_lock = threading.RLock()
+        self._initialized = False
         self._initialize_database()
     
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        """Get thread-local database connection"""
+        return self._connection_manager.get_connection()
+    
     def _initialize_database(self) -> None:
-        """Initialize the logging database schema"""
-        with self._connection:
-            self._connection.execute("""
-                CREATE TABLE IF NOT EXISTS enaam_runs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    function_name TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    input_data TEXT,
-                    output_summary TEXT,
-                    execution_time_ms INTEGER,
-                    error_message TEXT
+        """Initialize the logging database schema (thread-safe)"""
+        with self._init_lock:
+            if self._initialized:
+                return
+                
+            try:
+                connection = self._connection
+                with connection:
+                    connection.execute(DatabaseConstants.CREATE_ENAAM_RUNS_TABLE)
+                    
+                    # Create index for efficient querying
+                    connection.execute(DatabaseConstants.CREATE_TIMESTAMP_INDEX)
+                    
+                    connection.execute(DatabaseConstants.CREATE_FUNCTION_NAME_INDEX)
+                    
+                self._initialized = True
+            except sqlite3.Error as e:
+                logger = get_error_logger('logging')
+                logger.exception("Failed to initialize Enaam logging database")
+                raise DatabaseError(
+                    f"Failed to initialize Enaam logging database: {str(e)}",
+                    operation="database_initialization",
+                    cause=e
                 )
-            """)
-            
-            # Create index for efficient querying
-            self._connection.execute("""
-                CREATE INDEX IF NOT EXISTS idx_timestamp 
-                ON enaam_runs(timestamp)
-            """)
-            
-            self._connection.execute("""
-                CREATE INDEX IF NOT EXISTS idx_function_name 
-                ON enaam_runs(function_name)
-            """)
     
     def log_execution(
         self,
         function_name: str,
         source: str,
         status: str,
-        input_data: Dict[str, Any] = None,
-        output_data: Dict[str, Any] = None,
+        input_data: dict[str, Any] = None,
+        output_data: dict[str, Any] = None,
         execution_time_ms: int = None,
         error_message: str = None
-    ) -> int:
-        """Log a function execution"""
-        timestamp = datetime.now(timezone.utc).isoformat()
-        
-        # Create output summary
-        output_summary = self._create_output_summary(output_data)
-        
-        with self._connection:
-            cursor = self._connection.execute("""
-                INSERT INTO enaam_runs (
-                    timestamp, function_name, source, status,
-                    input_data, output_summary, execution_time_ms, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                timestamp,
-                function_name,
-                source,
-                status,
-                json.dumps(input_data) if input_data else None,
-                output_summary,
-                execution_time_ms,
-                error_message
-            ))
+    ) -> int | None:
+        """Log a function execution (thread-safe)"""
+        try:
+            # Ensure database is initialized for this thread
+            if not self._initialized:
+                self._initialize_database()
+                
+            timestamp = datetime.now(UTC).isoformat()
             
-            return cursor.lastrowid
+            # Create output summary
+            output_summary = self._create_output_summary(output_data)
+            
+            connection = self._connection
+            with connection:
+                cursor = connection.execute(DatabaseConstants.INSERT_ENAAM_RUN, (
+                    timestamp,
+                    function_name,
+                    source,
+                    status,
+                    json.dumps(input_data) if input_data else None,
+                    output_summary,
+                    execution_time_ms,
+                    error_message
+                ))
+                
+                return cursor.lastrowid
+                
+        except sqlite3.Error as e:
+            # Log to stderr instead of raising to avoid breaking main functionality
+            logger = get_error_logger('logging')
+            logger.error("Failed to log execution to database: %s", str(e))
+            return None
+        except Exception as e:
+            logger = get_error_logger('logging')
+            logger.exception("Unexpected error in log_execution")
+            return None
     
-    def _create_output_summary(self, output_data: Dict[str, Any]) -> str:
+    def _create_output_summary(self, output_data: dict[str, Any]) -> str:
         """Create a concise summary of the output data"""
         if not output_data:
             return None
@@ -122,49 +173,81 @@ class EnaamLogger:
         return " | ".join(summary_parts) if summary_parts else json.dumps(output_data)[:500]
     
     def get_recent_runs(self, limit: int = 50) -> list:
-        """Get recent function executions"""
-        cursor = self._connection.execute("""
-            SELECT id, timestamp, function_name, source, status, 
-                   output_summary, execution_time_ms, error_message
-            FROM enaam_runs
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit,))
-        
-        columns = ['id', 'timestamp', 'function_name', 'source', 'status', 
-                  'output_summary', 'execution_time_ms', 'error_message']
-        
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
-    
-    def get_function_stats(self) -> Dict[str, Any]:
-        """Get statistics about function executions"""
-        cursor = self._connection.execute("""
-            SELECT function_name, COUNT(*) as count,
-                   SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successes,
-                   SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as errors,
-                   AVG(execution_time_ms) as avg_time_ms
-            FROM enaam_runs
-            GROUP BY function_name
-            ORDER BY count DESC
-        """)
-        
-        stats = {}
-        for row in cursor.fetchall():
-            function_name, count, successes, errors, avg_time = row
-            stats[function_name] = {
-                "total_executions": count,
-                "successes": successes,
-                "errors": errors,
-                "success_rate": successes / count if count > 0 else 0,
-                "avg_execution_time_ms": round(avg_time, 2) if avg_time else None
-            }
+        """Get recent function executions (thread-safe)"""
+        try:
+            # Ensure database is initialized for this thread
+            if not self._initialized:
+                self._initialize_database()
+                
+            connection = self._connection
+            cursor = connection.execute(DatabaseConstants.SELECT_RECENT_RUNS, (limit,))
             
-        return stats
+            columns = ['id', 'timestamp', 'function_name', 'source', 'status', 
+                      'output_summary', 'execution_time_ms', 'error_message']
+            
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+            
+        except sqlite3.Error as e:
+            logger = get_error_logger('logging')
+            logger.error("Failed to get recent runs: %s", str(e))
+            return []
+    
+    def get_function_stats(self) -> dict[str, Any]:
+        """Get statistics about function executions (thread-safe)"""
+        try:
+            # Ensure database is initialized for this thread
+            if not self._initialized:
+                self._initialize_database()
+                
+            connection = self._connection
+            cursor = connection.execute(DatabaseConstants.SELECT_FUNCTION_STATS)
+            
+            stats = {}
+            for row in cursor.fetchall():
+                function_name, count, successes, errors, avg_time = row
+                stats[function_name] = {
+                    "total_executions": count,
+                    "successes": successes,
+                    "errors": errors,
+                    "success_rate": successes / count if count > 0 else 0,
+                    "avg_execution_time_ms": round(avg_time, 2) if avg_time else None
+                }
+                
+            return stats
+            
+        except sqlite3.Error as e:
+            logger = get_error_logger('logging')
+            logger.error("Failed to get function stats: %s", str(e))
+            return {}
     
     def close(self) -> None:
-        """Close database connection"""
-        if self._connection:
-            self._connection.close()
+        """Close all database connections"""
+        try:
+            self._connection_manager.close_all()
+        except Exception as e:
+            logger = get_error_logger('logging')
+            logger.error("Error closing database connections: %s", str(e))
+    
+    # Standard logging interface methods for compatibility
+    def debug(self, message: str, *args) -> None:
+        """Debug logging (compatible with standard logger interface)"""
+        error_logger = get_error_logger('enaam_logger')
+        error_logger.debug(message, *args)
+    
+    def info(self, message: str, *args) -> None:
+        """Info logging (compatible with standard logger interface)"""
+        error_logger = get_error_logger('enaam_logger')
+        error_logger.info(message, *args)
+    
+    def warning(self, message: str, *args) -> None:
+        """Warning logging (compatible with standard logger interface)"""
+        error_logger = get_error_logger('enaam_logger')
+        error_logger.warning(message, *args)
+    
+    def error(self, message: str, *args) -> None:
+        """Error logging (compatible with standard logger interface)"""
+        error_logger = get_error_logger('enaam_logger')
+        error_logger.error(message, *args)
     
     def __enter__(self):
         return self
@@ -173,5 +256,24 @@ class EnaamLogger:
         self.close()
 
 
-# Global logger instance
-logger = EnaamLogger()
+# Factory function for creating logger instances
+def create_logger(db_path: str | None = None) -> EnaamLogger:
+    """
+    Create a new EnaamLogger instance.
+    
+    This factory function creates logger instances without any global state.
+    All instances are independent and thread-safe.
+    
+    Args:
+        db_path: Optional database path. If None, uses default location.
+        
+    Returns:
+        New EnaamLogger instance
+    """
+    return EnaamLogger(db_path)
+
+
+# Dependency injection helper
+def create_default_logger() -> EnaamLogger:
+    """Create default logger instance for dependency injection."""
+    return create_logger()

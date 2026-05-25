@@ -1,0 +1,33 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "workers": 4,
+    "max_connections": 200,
+    "request_timeout": 30,
+    "keep_alive_timeout": 5
+  },
+  "logging": {
+    "level": "WARNING",
+    "file": "logs/enaam_production.log",
+    "max_size": "100MB",
+    "backup_count": 14
+  },
+  "security": {
+    "rate_limit": 30,
+    "rate_limit_window": 60,
+    "max_request_size": "512KB",
+    "cors_origins": ["https://enaam.app", "https://api.enaam.app"]
+  },
+  "health": {
+    "check_interval": 15,
+    "restart_threshold": 2,
+    "memory_threshold": "256MB",
+    "cpu_threshold": 70.0
+  },
+  "database": {
+    "path": "data/enaam_runs_production.db",
+    "backup_interval": 900,
+    "max_backups": 96
+  }
+}

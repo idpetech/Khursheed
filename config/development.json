@@ -1,0 +1,33 @@
+{
+  "server": {
+    "host": "localhost",
+    "port": 8080,
+    "workers": 1,
+    "max_connections": 50,
+    "request_timeout": 30,
+    "keep_alive_timeout": 5
+  },
+  "logging": {
+    "level": "DEBUG",
+    "file": "",
+    "max_size": "10MB",
+    "backup_count": 3
+  },
+  "security": {
+    "rate_limit": 120,
+    "rate_limit_window": 60,
+    "max_request_size": "2MB",
+    "cors_origins": ["*"]
+  },
+  "health": {
+    "check_interval": 30,
+    "restart_threshold": 5,
+    "memory_threshold": "1GB",
+    "cpu_threshold": 90.0
+  },
+  "database": {
+    "path": "data/enaam_runs_dev.db",
+    "backup_interval": 3600,
+    "max_backups": 24
+  }
+}

@@ -5,6 +5,11 @@ from skills.scout import ScoutSkill
 from skills.sifter import SifterSkill
 from skills.timestamp import TimestampSkill
 
+# New skills added
+from skills.calculator import CalculatorSkill
+from skills.weather import WeatherSkill
+from skills.file_analyzer import FileAnalyzerSkill
+
 __all__ = [
     "Skill",
     "EchoSkill",
@@ -12,4 +17,7 @@ __all__ = [
     "ScoutSkill",
     "SifterSkill",
     "TimestampSkill",
+    "CalculatorSkill",
+    "WeatherSkill",
+    "FileAnalyzerSkill",
 ]

@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -9,26 +10,74 @@ from skills.base import Skill
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
+class ThreadLocalConnection:
+    """Thread-local SQLite connection manager for Khursheed Manager"""
+    
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self._local = threading.local()
+        self._lock = threading.RLock()
+    
+    def get_connection(self) -> sqlite3.Connection:
+        """Get or create thread-local database connection"""
+        if not hasattr(self._local, 'connection'):
+            with self._lock:
+                # Double-check after acquiring lock
+                if not hasattr(self._local, 'connection'):
+                    self._local.connection = sqlite3.connect(
+                        self.db_path,
+                        timeout=30.0,  # 30 second timeout for busy database
+                        check_same_thread=False  # Allow cross-thread usage
+                    )
+                    # Enable WAL mode for better concurrent access
+                    self._local.connection.execute("PRAGMA journal_mode=WAL")
+                    self._local.connection.execute("PRAGMA synchronous=NORMAL")
+        return self._local.connection
+    
+    def close_all(self) -> None:
+        """Close all thread-local connections"""
+        if hasattr(self._local, 'connection'):
+            self._local.connection.close()
+            delattr(self._local, 'connection')
+
+
 class Manager:
     def __init__(self, db_path: str = "khursheed.db") -> None:
         self._skills: Dict[str, Skill] = {}
         self._db_path = PROJECT_ROOT / db_path
-        self._connection = sqlite3.connect(self._db_path)
+        self._connection_manager = ThreadLocalConnection(self._db_path)
+        self._init_lock = threading.RLock()
+        self._initialized = False
         self._initialize_database()
 
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        """Get thread-local database connection"""
+        return self._connection_manager.get_connection()
+
     def _initialize_database(self) -> None:
-        with self._connection:
-            self._connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS skill_runs (
-                    task_id TEXT NOT NULL,
-                    skill_name TEXT NOT NULL,
-                    executed_at TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    PRIMARY KEY (task_id, skill_name)
-                )
-                """
-            )
+        """Initialize the database schema (thread-safe)"""
+        with self._init_lock:
+            if self._initialized:
+                return
+                
+            try:
+                connection = self._connection
+                with connection:
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS skill_runs (
+                            task_id TEXT NOT NULL,
+                            skill_name TEXT NOT NULL,
+                            executed_at TEXT NOT NULL,
+                            result_json TEXT NOT NULL,
+                            PRIMARY KEY (task_id, skill_name)
+                        )
+                        """
+                    )
+                self._initialized = True
+            except sqlite3.Error as e:
+                raise RuntimeError(f"Failed to initialize Khursheed database: {e}") from e
 
     def register(self, skill: Skill) -> None:
         self._skills[skill.name] = skill
@@ -49,7 +98,8 @@ class Manager:
         return result
 
     def close(self) -> None:
-        self._connection.close()
+        """Close all database connections"""
+        self._connection_manager.close_all()
 
     def __enter__(self) -> "Manager":
         return self

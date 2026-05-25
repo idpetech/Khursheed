@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enaam Chat Tester</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .chat-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            width: 90%;
+            max-width: 800px;
+            height: 80vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        
+        .chat-header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .chat-header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        
+        .chat-header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        
+        .server-status {
+            background: #f8f9fa;
+            padding: 10px 20px;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 14px;
+        }
+        
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-connected { background: #28a745; }
+        .status-connecting { background: #ffc107; }
+        .status-error { background: #dc3545; }
+        
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f8f9fa;
+        }
+        
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: flex-start;
+        }
+        
+        .message.user {
+            justify-content: flex-end;
+        }
+        
+        .message-content {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            word-wrap: break-word;
+        }
+        
+        .message.user .message-content {
+            background: #007bff;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        
+        .message.bot .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e9ecef;
+            border-bottom-left-radius: 4px;
+        }
+        
+        .message-metadata {
+            font-size: 12px;
+            opacity: 0.6;
+            margin-top: 5px;
+        }
+        
+        .message-suggestions {
+            margin-top: 10px;
+        }
+        
+        .suggestion {
+            display: inline-block;
+            background: #e3f2fd;
+            color: #1976d2;
+            padding: 6px 12px;
+            margin: 4px 4px 4px 0;
+            border-radius: 16px;
+            font-size: 12px;
+            cursor: pointer;
+            border: 1px solid #bbdefb;
+            transition: all 0.2s;
+        }
+        
+        .suggestion:hover {
+            background: #1976d2;
+            color: white;
+        }
+        
+        .chat-input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e9ecef;
+        }
+        
+        .chat-input-form {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .chat-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e9ecef;
+            border-radius: 25px;
+            outline: none;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+        
+        .chat-input:focus {
+            border-color: #007bff;
+        }
+        
+        .send-button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+        
+        .send-button:hover:not(:disabled) {
+            background: #0056b3;
+        }
+        
+        .send-button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        
+        .loading {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #666;
+            font-size: 14px;
+            padding: 10px;
+        }
+        
+        .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid #e9ecef;
+            border-top: 2px solid #007bff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .config-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.1);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h1>🤖 Enaam Chat Tester</h1>
+            <p>Test your Chief of Staff AI in real-time</p>
+            <div class="config-panel" onclick="toggleConfig()">⚙️ Config</div>
+        </div>
+        
+        <div class="server-status">
+            <div style="display: flex; align-items: center;">
+                <div class="status-indicator status-connecting" id="statusIndicator"></div>
+                <span id="statusText">Connecting...</span>
+            </div>
+            <div>
+                <span id="serverUrl">localhost:8092</span>
+                <span style="margin-left: 15px;">Session: <span id="sessionId"></span></span>
+            </div>
+        </div>
+        
+        <div class="chat-messages" id="chatMessages">
+            <div class="message bot">
+                <div class="message-content">
+                    👋 Welcome! I'm connecting to your Enaam server...
+                </div>
+            </div>
+        </div>
+        
+        <div class="chat-input-container">
+            <form class="chat-input-form" id="chatForm">
+                <input 
+                    type="text" 
+                    class="chat-input" 
+                    id="chatInput"
+                    placeholder="Type your message to Enaam..."
+                    disabled
+                >
+                <button type="submit" class="send-button" id="sendButton" disabled>Send</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        class EnaanChatWebTester {
+            constructor() {
+                this.serverUrl = 'http://localhost:8092';
+                this.sessionId = 'web-test-' + Date.now();
+                this.userId = 'web-user';
+                this.isConnected = false;
+                this.messageCount = 0;
+                
+                this.initializeElements();
+                this.setupEventListeners();
+                this.testConnection();
+            }
+            
+            initializeElements() {
+                this.statusIndicator = document.getElementById('statusIndicator');
+                this.statusText = document.getElementById('statusText');
+                this.serverUrlSpan = document.getElementById('serverUrl');
+                this.sessionIdSpan = document.getElementById('sessionId');
+                this.chatMessages = document.getElementById('chatMessages');
+                this.chatForm = document.getElementById('chatForm');
+                this.chatInput = document.getElementById('chatInput');
+                this.sendButton = document.getElementById('sendButton');
+                
+                this.sessionIdSpan.textContent = this.sessionId.slice(-8);
+                this.serverUrlSpan.textContent = this.serverUrl.replace('http://', '');
+            }
+            
+            setupEventListeners() {
+                this.chatForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    this.sendMessage();
+                });
+                
+                this.chatInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        this.sendMessage();
+                    }
+                });
+            }
+            
+            async testConnection() {
+                try {
+                    const response = await fetch(this.serverUrl + '/health');
+                    if (response.ok) {
+                        this.setConnectionStatus('connected', 'Connected to Enaam server');
+                        this.enableInput();
+                        this.addBotMessage('✅ Connected! Ask me anything - try "check my email" or "give me a summary"');
+                    } else {
+                        throw new Error('Server responded with error');
+                    }
+                } catch (error) {
+                    this.setConnectionStatus('error', 'Cannot connect to server');
+                    this.addBotMessage('❌ Cannot connect to Enaam server. Make sure it\'s running on ' + this.serverUrl);
+                }
+            }
+            
+            setConnectionStatus(status, text) {
+                this.statusIndicator.className = 'status-indicator status-' + status;
+                this.statusText.textContent = text;
+                this.isConnected = status === 'connected';
+            }
+            
+            enableInput() {
+                this.chatInput.disabled = false;
+                this.sendButton.disabled = false;
+                this.chatInput.focus();
+            }
+            
+            disableInput() {
+                this.chatInput.disabled = true;
+                this.sendButton.disabled = true;
+            }
+            
+            async sendMessage() {
+                const message = this.chatInput.value.trim();
+                if (!message || !this.isConnected) return;
+                
+                this.addUserMessage(message);
+                this.chatInput.value = '';
+                this.disableInput();
+                this.showLoading();
+                
+                try {
+                    const response = await this.sendToEnaam(message);
+                    this.handleEnaanResponse(response);
+                } catch (error) {
+                    this.addBotMessage('❌ Error: ' + error.message);
+                } finally {
+                    this.hideLoading();
+                    this.enableInput();
+                    this.chatInput.focus();
+                }
+            }
+            
+            async sendToEnaam(query) {
+                const payload = {
+                    method: 'chat_query',
+                    params: {
+                        query: query,
+                        context: {
+                            session_id: this.sessionId,
+                            user_id: this.userId
+                        }
+                    },
+                    response_type: 'chat',
+                    id: 'web-chat-' + Date.now()
+                };
+                
+                const response = await fetch(this.serverUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (!response.ok) {
+                    throw new Error('HTTP ' + response.status + ': ' + response.statusText);
+                }
+                
+                return await response.json();
+            }
+            
+            handleEnaanResponse(response) {
+                if (response.error) {
+                    this.addBotMessage('❌ Server Error: ' + response.error);
+                    return;
+                }
+                
+                const result = response.result || {};
+                const message = result.message || 'No response message';
+                const suggestions = result.suggestions || [];
+                const metadata = result.metadata || {};
+                
+                this.addBotMessage(message, suggestions, metadata);
+            }
+            
+            addUserMessage(message) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message user';
+                messageDiv.innerHTML = `
+                    <div class="message-content">${this.escapeHtml(message)}</div>
+                `;
+                this.chatMessages.appendChild(messageDiv);
+                this.scrollToBottom();
+            }
+            
+            addBotMessage(message, suggestions = [], metadata = {}) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message bot';
+                
+                let suggestionsHtml = '';
+                if (suggestions.length > 0) {
+                    suggestionsHtml = '<div class="message-suggestions">';
+                    suggestions.forEach(suggestion => {
+                        suggestionsHtml += `<span class="suggestion" onclick="chatTester.quickSend('${this.escapeHtml(suggestion)}')">${this.escapeHtml(suggestion)}</span>`;
+                    });
+                    suggestionsHtml += '</div>';
+                }
+                
+                let metadataHtml = '';
+                if (metadata.action) {
+                    metadataHtml = `<div class="message-metadata">Action: ${metadata.action} • Source: ${metadata.source || 'unknown'}</div>`;
+                }
+                
+                messageDiv.innerHTML = `
+                    <div class="message-content">
+                        ${this.formatMessage(message)}
+                        ${suggestionsHtml}
+                        ${metadataHtml}
+                    </div>
+                `;
+                
+                this.chatMessages.appendChild(messageDiv);
+                this.scrollToBottom();
+            }
+            
+            formatMessage(message) {
+                // Convert markdown-style formatting to HTML
+                return this.escapeHtml(message)
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                    .replace(/\n/g, '<br>');
+            }
+            
+            quickSend(message) {
+                this.chatInput.value = message;
+                this.sendMessage();
+            }
+            
+            showLoading() {
+                const loadingDiv = document.createElement('div');
+                loadingDiv.className = 'message bot loading-message';
+                loadingDiv.innerHTML = `
+                    <div class="message-content loading">
+                        <div class="spinner"></div>
+                        <span>Enaam is thinking...</span>
+                    </div>
+                `;
+                this.chatMessages.appendChild(loadingDiv);
+                this.scrollToBottom();
+            }
+            
+            hideLoading() {
+                const loadingMessage = this.chatMessages.querySelector('.loading-message');
+                if (loadingMessage) {
+                    loadingMessage.remove();
+                }
+            }
+            
+            scrollToBottom() {
+                this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+            }
+            
+            escapeHtml(text) {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            }
+        }
+        
+        // Global functions
+        function toggleConfig() {
+            const newUrl = prompt('Enter Enaam server URL:', chatTester.serverUrl);
+            if (newUrl && newUrl !== chatTester.serverUrl) {
+                chatTester.serverUrl = newUrl;
+                chatTester.serverUrlSpan.textContent = newUrl.replace('http://', '');
+                chatTester.testConnection();
+            }
+        }
+        
+        // Initialize the chat tester
+        let chatTester;
+        document.addEventListener('DOMContentLoaded', () => {
+            chatTester = new EnaanChatWebTester();
+        });
+    </script>
+</body>
+</html>

@@ -9,7 +9,10 @@ from executive_summary import generate_executive_summary
 from llm_agent import HeyEmanAgent
 from manager import Manager
 from notifications import MarkdownFileNotifier
-from skills import EchoSkill, LeadScoutSkill, SifterSkill, TimestampSkill
+from skills import (
+    EchoSkill, LeadScoutSkill, SifterSkill, TimestampSkill,
+    CalculatorSkill, WeatherSkill, FileAnalyzerSkill
+)
 
 
 def main() -> None:
@@ -28,7 +31,15 @@ def main() -> None:
     query = " ".join(sys.argv[1:])
 
     manager = Manager()
-    manager.register_many([EchoSkill(), LeadScoutSkill(), SifterSkill(), TimestampSkill()])
+    manager.register_many([
+        EchoSkill(), 
+        LeadScoutSkill(), 
+        SifterSkill(), 
+        TimestampSkill(),
+        CalculatorSkill(),
+        WeatherSkill(),
+        FileAnalyzerSkill()
+    ])
 
     api_key = os.getenv("OPENAI_API_KEY")
     if api_key:

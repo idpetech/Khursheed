@@ -6,15 +6,12 @@ Simple CLI interface to run Enaam Chief-of-Staff system.
 """
 
 import sys
-import json
-from pathlib import Path
-from typing import Dict, Any
+from typing import Any
+from typing import Dict
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from enaam.core.agent import EnaamAgent
-from enaam.config import config
+from .core.agent import EnaamAgent
+from .core.error_handler import get_error_logger
+from .core.logging import create_logger
 
 
 def main():
@@ -22,7 +19,8 @@ def main():
     print("🤖 Enaam - Chief of Staff AI System")
     print("=" * 50)
     
-    # Initialize agent
+    # Initialize logger and agent
+    cli_logger = create_logger()
     agent = EnaamAgent()
     
     if len(sys.argv) > 1:
@@ -47,6 +45,7 @@ def main():
                     response = agent.get_status()
                     print_response(response)
                 elif request:
+                    cli_logger.debug("Processing interactive request: %s", request)
                     response = agent.process_request(request)
                     print_response(response)
                 else:
@@ -56,6 +55,9 @@ def main():
                 print("\n👋 Goodbye!")
                 break
             except Exception as e:
+                error_logger = get_error_logger('run')
+                error_logger.exception("Unexpected error in interactive mode")
+                cli_logger.error("Interactive mode error: %s", str(e))
                 print(f"❌ Error: {e}")
 
 

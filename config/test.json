@@ -1,0 +1,37 @@
+{
+  "agent": {
+    "name": "Enaam-Test",
+    "version": "1.0.0",
+    "mode": "chief_of_staff"
+  },
+  "server": {
+    "host": "localhost",
+    "port": 8082
+  },
+  "database": {
+    "path": "test_khursheed.db"
+  },
+  "logging": {
+    "level": "DEBUG",
+    "console": true,
+    "file": "logs/test_enaam.log"
+  },
+  "email": {
+    "enabled": false
+  },
+  "api": {
+    "openai_key": null,
+    "tavily_key": null
+  },
+  "khursheed": {
+    "enabled": false,
+    "preserve_cron": false,
+    "database_path": "test_khursheed.db",
+    "tasks_path": "test_tasks.json"
+  },
+  "mcp": {
+    "enabled": false,
+    "server_port": 8083,
+    "tools_enabled": []
+  }
+}

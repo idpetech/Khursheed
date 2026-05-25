@@ -1,0 +1,33 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "workers": 2,
+    "max_connections": 100,
+    "request_timeout": 30,
+    "keep_alive_timeout": 5
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/enaam_staging.log",
+    "max_size": "50MB",
+    "backup_count": 7
+  },
+  "security": {
+    "rate_limit": 60,
+    "rate_limit_window": 60,
+    "max_request_size": "1MB",
+    "cors_origins": ["https://staging.enaam.dev", "https://localhost:3000"]
+  },
+  "health": {
+    "check_interval": 30,
+    "restart_threshold": 3,
+    "memory_threshold": "512MB",
+    "cpu_threshold": 80.0
+  },
+  "database": {
+    "path": "data/enaam_runs_staging.db",
+    "backup_interval": 1800,
+    "max_backups": 48
+  }
+}

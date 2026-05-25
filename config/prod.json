@@ -1,0 +1,34 @@
+{
+  "agent": {
+    "name": "Enaam",
+    "version": "1.0.0",
+    "mode": "chief_of_staff"
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080
+  },
+  "database": {
+    "path": "/app/data/khursheed.db"
+  },
+  "logging": {
+    "level": "INFO",
+    "console": false,
+    "file": "/app/logs/enaam.log"
+  },
+  "email": {
+    "enabled": true
+  },
+  "api": {},
+  "khursheed": {
+    "enabled": true,
+    "preserve_cron": true,
+    "database_path": "/app/data/khursheed.db",
+    "tasks_path": "/app/data/tasks.json"
+  },
+  "mcp": {
+    "enabled": true,
+    "server_port": 8081,
+    "tools_enabled": ["basic", "advanced"]
+  }
+}

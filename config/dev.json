@@ -1,0 +1,36 @@
+{
+  "agent": {
+    "name": "Enaam",
+    "version": "1.0.0",
+    "mode": "chief_of_staff"
+  },
+  "server": {
+    "host": "localhost",
+    "port": 8080
+  },
+  "database": {
+    "path": "khursheed.db"
+  },
+  "logging": {
+    "level": "DEBUG",
+    "console": true
+  },
+  "email": {
+    "enabled": false
+  },
+  "api": {
+    "openai_key": null,
+    "tavily_key": null
+  },
+  "khursheed": {
+    "enabled": true,
+    "preserve_cron": true,
+    "database_path": "khursheed.db",
+    "tasks_path": "tasks.json"
+  },
+  "mcp": {
+    "enabled": false,
+    "server_port": 8081,
+    "tools_enabled": []
+  }
+}

@@ -6,6 +6,9 @@ from typing import Any, Dict
 
 import certifi
 
+# from enaam.core.constants import APIConstants
+# from enaam.core.enums import EnvironmentKeys
+
 
 def tavily_search(
     query: str,
@@ -26,9 +29,9 @@ def tavily_search(
     request = urllib.request.Request(
         "https://api.tavily.com/search",
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={APIConstants.CONTENT_TYPE_HEADER: APIConstants.APPLICATION_JSON},
         method="POST",
     )
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(request, timeout=30, context=ssl_ctx) as response:
+    with urllib.request.urlopen(request, timeout=APIConstants.DEFAULT_HTTP_TIMEOUT, context=ssl_ctx) as response:
         return json.loads(response.read().decode("utf-8"))

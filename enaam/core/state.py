@@ -4,9 +4,11 @@ Enaam State Management
 Simple state tracking for agent operations.
 """
 
-from typing import Dict, Any, Optional
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from dataclasses import field
+from datetime import UTC
+from datetime import datetime
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -17,7 +19,7 @@ class EnaamState:
     last_action: Optional[str] = None
     session_data: Dict[str, Any] = field(default_factory=dict)
     request_count: int = 0
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     
     def update_request(self, request: str) -> None:
         """Update current request and increment counter"""

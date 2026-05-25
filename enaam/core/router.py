@@ -4,61 +4,68 @@ Enaam Router - Intent classification and routing
 Routes requests to appropriate handlers based on intent classification.
 """
 
-from typing import Dict, Any, Optional
 import re
+from typing import Any, Dict, List
+
+from .enums import (
+    ActionType,
+    IntentType,
+    HandlerType,
+)
+from .constants import DefaultValues
 
 
 class EnaamRouter:
     """Simple intent-based router for Enaam requests"""
     
-    def __init__(self):
+    def __init__(self) -> None:
         self.khursheed_patterns = {
-            "email_summary": [
+            ActionType.EMAIL_SUMMARY.value: [
                 r"check.*email",
                 r"email.*summary", 
                 r"inbox.*status",
                 r"mail.*check"
             ],
-            "lead_scan": [
+            ActionType.LEAD_SCAN.value: [
                 r"find.*leads?",
                 r"lead.*discovery",
                 r"prospect.*search",
                 r"business.*leads?"
             ],
-            "weekly_digest": [
+            ActionType.WEEKLY_DIGEST.value: [
                 r"weekly.*summary",
                 r"weekly.*digest", 
                 r"week.*report",
                 r"weekly.*update"
             ],
-            "executive_summary": [
+            ActionType.EXECUTIVE_SUMMARY.value: [
                 r"executive.*summary",
                 r"daily.*summary",
                 r"status.*report",
                 r"summary",
                 r"report"
             ],
-            "run_scheduled_tasks": [
+            ActionType.RUN_SCHEDULED_TASKS.value: [
                 r"run.*tasks?",
                 r"execute.*tasks?",
                 r"scheduled.*tasks?",
                 r"run.*jobs?"
             ],
             # NEW REQUIRED WRAPPER PATTERNS
-            "weekly_monday_9am_digest": [
+            ActionType.WEEKLY_MONDAY_9AM_DIGEST.value: [
                 r"monday.*digest",
                 r"9am.*digest",
                 r"weekly.*monday",
                 r"monday.*9am",
                 r"weekly.*cron"
             ],
-            "lead_generation_run": [
+            ActionType.LEAD_GENERATION_RUN.value: [
                 r"lead.*generation",
                 r"generate.*leads?",
                 r"lead.*automation",
                 r"auto.*lead"
             ],
-            "email_triage_run": [
+            ActionType.EMAIL_TRIAGE_RUN.value: [
                 r"email.*triage",
                 r"triage.*email",
                 r"process.*email",
@@ -75,15 +82,15 @@ class EnaamRouter:
             for pattern in patterns:
                 if re.search(pattern, request_lower):
                     return {
-                        "type": "khursheed_bridge",
+                        "type": IntentType.KHURSHEED_BRIDGE.value,
                         "action": action,
                         "confidence": 0.8
                     }
         
         # Default to general query
         return {
-            "type": "general",
-            "action": "handle_general", 
+            "type": IntentType.GENERAL.value,
+            "action": ActionType.HANDLE_GENERAL.value, 
             "confidence": 0.3
         }
     
@@ -102,12 +109,12 @@ class EnaamRouter:
     
     def _determine_handler(self, intent: Dict[str, Any]) -> str:
         """Determine which handler should process this intent"""
-        if intent["type"] == "khursheed_bridge":
-            return "khursheed_bridge"
-        elif intent["type"] == "general":
-            return "general"
+        if intent["type"] == IntentType.KHURSHEED_BRIDGE.value:
+            return HandlerType.KHURSHEED_BRIDGE.value
+        elif intent["type"] == IntentType.GENERAL.value:
+            return HandlerType.GENERAL.value
         else:
-            return "unknown"
+            return HandlerType.UNKNOWN.value
     
     def _extract_parameters(self, request: str, intent: Dict[str, Any]) -> Dict[str, Any]:
         """Extract parameters from the request based on intent"""

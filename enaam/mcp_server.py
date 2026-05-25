@@ -5,27 +5,42 @@ Enaam MCP Server CLI - Start/stop the MCP server
 Provides command line interface to manage the MCP server.
 """
 
+import logging
 import sys
 import time
-import json
+from typing import Dict, List, Any
+
 import requests
-from pathlib import Path
 
-# Add parent directories to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Setup CLI logger
+cli_logger = logging.getLogger('enaam.mcp_cli')
 
-from enaam.mcp.server import MCPServer, create_sample_requests
-from enaam.config import config
+from .core.constants import (
+    APIConstants,
+    DefaultValues,
+    MagicStringConstants,
+    TestConstants,
+    CLIConstants
+)
+from .core.enums import (
+    ResponseStatus,
+    DataFields
+)
+from .mcp.server import MCPServer
+from .mcp.server import create_sample_requests
+from .mcp.schemas import MCPMethod, ResponseType
 
 
-def start_server(host: str = "localhost", port: int = 8080):
+def start_server(host: str = MagicStringConstants.LOCALHOST, port: int = DefaultValues.SERVER_PORT) -> None:
     """Start the MCP server"""
+    cli_logger.info("Starting MCP server on %s:%d", host, port)
     print(f"🚀 Starting Enaam MCP Server on {host}:{port}...")
     
     server = MCPServer(host, port)
     result = server.start()
     
-    if result["status"] == "success":
+    if result[DataFields.STATUS.value] == ResponseStatus.SUCCESS.value:
+        cli_logger.info("MCP server started successfully")
         print(f"✅ {result['message']}")
         print("\nEndpoints:")
         for endpoint in result["endpoints"]:
@@ -33,7 +48,7 @@ def start_server(host: str = "localhost", port: int = 8080):
         
         print("\n💡 Try these sample requests:")
         print("  curl -X POST http://localhost:8080/ \\")
-        print("    -H 'Content-Type: application/json' \\")
+        print(f"    -H '{APIConstants.CONTENT_TYPE_HEADER}: {APIConstants.APPLICATION_JSON}' \\")
         print("    -d '{\"method\": \"run_weekly_digest\", \"params\": {}, \"response_type\": \"json\"}'")
         
         # Keep server running
@@ -44,27 +59,33 @@ def start_server(host: str = "localhost", port: int = 8080):
         except KeyboardInterrupt:
             print("\n🛑 Stopping server...")
             stop_result = server.stop()
+            cli_logger.info("MCP server stopped")
             print(f"✅ {stop_result['message']}")
     else:
+        cli_logger.error("Failed to start MCP server: %s", result['message'])
         print(f"❌ {result['message']}")
         sys.exit(1)
 
 
-def test_server(host: str = "localhost", port: int = 8080):
+def test_server(host: str = MagicStringConstants.LOCALHOST, port: int = DefaultValues.SERVER_PORT) -> None:
     """Test the MCP server with sample requests"""
     server_url = f"http://{host}:{port}"
     
+    cli_logger.info("Testing MCP server at %s", server_url)
     print(f"🧪 Testing Enaam MCP Server at {server_url}")
     
     # Test server health
     try:
-        response = requests.get(f"{server_url}/health", timeout=5)
+        response = requests.get(f"{server_url}/health", timeout=APIConstants.HEALTH_CHECK_TIMEOUT)
         if response.status_code == 200:
+            cli_logger.info("Server health check passed")
             print("✅ Server health check passed")
         else:
+            cli_logger.error("Server health check failed with status %d", response.status_code)
             print("❌ Server health check failed")
             return
     except requests.RequestException as e:
+        cli_logger.error("Cannot connect to server: %s", str(e))
         print(f"❌ Cannot connect to server: {e}")
         return
     
@@ -78,8 +99,8 @@ def test_server(host: str = "localhost", port: int = 8080):
             response = requests.post(
                 server_url,
                 json=request,
-                headers={'Content-Type': 'application/json'},
-                timeout=30
+                headers={APIConstants.CONTENT_TYPE_HEADER: APIConstants.APPLICATION_JSON},
+                timeout=APIConstants.DEFAULT_HTTP_TIMEOUT
             )
             
             if response.status_code == 200:
@@ -88,13 +109,13 @@ def test_server(host: str = "localhost", port: int = 8080):
                 
                 # Show preview of response
                 if result.get("result"):
-                    if request["response_type"] == "email":
+                    if request[DataFields.RESPONSE_TYPE.value] == ResponseType.EMAIL.value:
                         email_data = result["result"]
                         print(f"     Subject: {email_data.get('subject', 'N/A')}")
                         body = email_data.get('body', '')
                         preview = body[:100] + "..." if len(body) > 100 else body
                         print(f"     Body: {preview}")
-                    elif request["response_type"] == "chat":
+                    elif request[DataFields.RESPONSE_TYPE.value] == ResponseType.CHAT.value:
                         chat_data = result["result"] 
                         message = chat_data.get('message', '')
                         preview = message[:100] + "..." if len(message) > 100 else message
@@ -102,12 +123,12 @@ def test_server(host: str = "localhost", port: int = 8080):
                     else:
                         # JSON response
                         json_data = result["result"]["data"]
-                        if "summary" in json_data:
-                            summary = json_data["summary"]
+                        if DataFields.SUMMARY.value in json_data:
+                            summary = json_data[DataFields.SUMMARY.value]
                             preview = summary[:100] + "..." if len(summary) > 100 else summary
                             print(f"     Data: {preview}")
                         else:
-                            print(f"     Status: {json_data.get('status', 'N/A')}")
+                            print(f"     Status: {json_data.get(DataFields.STATUS.value, MagicStringConstants.NOT_AVAILABLE)}")
             else:
                 print(f"  ❌ Failed with status {response.status_code}")
                 
@@ -115,7 +136,7 @@ def test_server(host: str = "localhost", port: int = 8080):
             print(f"  ❌ Request failed: {e}")
 
 
-def show_help():
+def show_help() -> None:
     """Show help information"""
     help_text = """
 🤖 Enaam MCP Server CLI
@@ -161,7 +182,7 @@ Response types:
     print(help_text)
 
 
-def main():
+def main() -> None:
     """Main CLI entry point"""
     if len(sys.argv) < 2:
         show_help()
@@ -169,15 +190,15 @@ def main():
     
     command = sys.argv[1].lower()
     
-    if command == "start":
-        host = sys.argv[2] if len(sys.argv) > 2 else "localhost"
+    if command == MagicStringConstants.START_COMMAND:
+        host = sys.argv[2] if len(sys.argv) > 2 else MagicStringConstants.LOCALHOST
         port = int(sys.argv[3]) if len(sys.argv) > 3 else 8080
         start_server(host, port)
-    elif command == "test":
-        host = sys.argv[2] if len(sys.argv) > 2 else "localhost"
+    elif command == MagicStringConstants.TEST_COMMAND:
+        host = sys.argv[2] if len(sys.argv) > 2 else MagicStringConstants.LOCALHOST
         port = int(sys.argv[3]) if len(sys.argv) > 3 else 8080
         test_server(host, port)
-    elif command == "help":
+    elif command == MagicStringConstants.HELP_COMMAND:
         show_help()
     else:
         print(f"❌ Unknown command: {command}")
@@ -185,5 +206,5 @@ def main():
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == MagicStringConstants.MAIN_MODULE:
     main()

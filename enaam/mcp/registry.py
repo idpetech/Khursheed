@@ -4,7 +4,7 @@ Enaam MCP Registry - Placeholder
 Registry for MCP tools and resources.
 """
 
-from typing import Dict, Any, Optional
+from typing import Any
 
 
 class MCPRegistry:
@@ -15,25 +15,25 @@ class MCPRegistry:
         self.registered_resources = {}
         self.metadata = {}
     
-    def register_tool(self, name: str, handler: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def register_tool(self, name: str, handler: Any, metadata: dict[str, Any] | None = None) -> bool:
         """Register a tool in the MCP registry (placeholder)"""
         self.registered_tools[name] = handler
         if metadata:
             self.metadata[f"tool:{name}"] = metadata
         return True
     
-    def register_resource(self, name: str, handler: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def register_resource(self, name: str, handler: Any, metadata: dict[str, Any] | None = None) -> bool:
         """Register a resource in the MCP registry (placeholder)"""
         self.registered_resources[name] = handler
         if metadata:
             self.metadata[f"resource:{name}"] = metadata
         return True
     
-    def get_tool(self, name: str) -> Optional[Any]:
+    def get_tool(self, name: str) -> Any | None:
         """Get a registered tool (placeholder)"""
         return self.registered_tools.get(name)
     
-    def get_resource(self, name: str) -> Optional[Any]:
+    def get_resource(self, name: str) -> Any | None:
         """Get a registered resource (placeholder)"""
         return self.registered_resources.get(name)
     
@@ -45,7 +45,7 @@ class MCPRegistry:
         """List all registered resources (placeholder)"""
         return list(self.registered_resources.keys())
     
-    def get_registry_info(self) -> Dict[str, Any]:
+    def get_registry_info(self) -> dict[str, Any]:
         """Get registry information (placeholder)"""
         return {
             "tools_count": len(self.registered_tools),

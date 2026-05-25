@@ -1,10 +1,8 @@
 import json
-import logging
 import os
 from datetime import datetime, timezone
 
 import streamlit as st
-from dotenv import load_dotenv
 
 from executive_summary import generate_executive_summary
 from llm_agent import HeyEmanAgent
@@ -12,19 +10,17 @@ from manager import Manager
 from notifications import MarkdownFileNotifier
 from skills import EchoSkill, LeadScoutSkill, SifterSkill, TimestampSkill
 
-logger = logging.getLogger(__name__)
 
-
-@st.cache_resource
-def _init_manager() -> Manager:
-    manager = Manager()
-    manager.register_many([EchoSkill(), LeadScoutSkill(), SifterSkill(), TimestampSkill()])
-    return manager
-
-
-@st.cache_resource
-def _init_agent(_manager: Manager) -> HeyEmanAgent:
-    return HeyEmanAgent(_manager, api_key=os.getenv("OPENAI_API_KEY"))
+def _load_dotenv(path: str = ".env") -> None:
+    if not os.path.exists(path):
+        return
+    with open(path, "r", encoding="utf-8") as file:
+        for line in file:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip())
 
 
 def _load_tasks(path: str = "tasks.json") -> list[dict]:
@@ -74,22 +70,22 @@ def main() -> None:
     st.title("Hey Eman")
     st.caption("Lightweight command center for Khursheed.")
 
-    load_dotenv(override=True)
-    manager = _init_manager()
-    agent = _init_agent(manager)
+    _load_dotenv()
+    manager = Manager()
+    manager.register_many([EchoSkill(), LeadScoutSkill(), SifterSkill(), TimestampSkill()])
+    agent = HeyEmanAgent(manager)
 
     query = st.text_input("Ask me a command", placeholder="Hey Eman, what are my todos today?")
     if st.button("Submit") and query:
-        logger.info("Processing query: %s", query[:80])
         if os.getenv("OPENAI_API_KEY"):
-            response = agent.respond(query)
+            try:
+                response = agent.respond(query)
+            except Exception as e:
+                st.warning(f"OpenAI API failed: {str(e)[:100]}... Falling back to simple commands.")
+                response = _handle_query(query, manager)
         else:
             response = _handle_query(query, manager)
-        st.session_state["last_response"] = response
-
-    if "last_response" in st.session_state:
-        st.markdown("### Latest Response")
-        st.markdown(st.session_state["last_response"])
+        st.markdown(response)
 
     st.markdown("---")
     st.subheader("Quick Actions")
