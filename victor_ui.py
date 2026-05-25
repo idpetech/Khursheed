@@ -111,8 +111,7 @@ def render_chat_interface():
                     # Save to chat context
                     session.add_turn(
                         user_input=prompt,
-                        assistant_response=response,
-                        metadata={"interface": "streamlit_ui"}
+                        assistant_response={"content": response, "interface": "streamlit_ui"}
                     )
                     
                 except Exception as e:
@@ -120,8 +119,7 @@ def render_chat_interface():
                     st.error(error_msg)
                     session.add_turn(
                         user_input=prompt,
-                        assistant_response=error_msg,
-                        metadata={"interface": "streamlit_ui", "error": True}
+                        assistant_response={"content": error_msg, "interface": "streamlit_ui", "error": True}
                     )
 
 
