@@ -29,9 +29,9 @@ def tavily_search(
     request = urllib.request.Request(
         "https://api.tavily.com/search",
         data=payload,
-        headers={APIConstants.CONTENT_TYPE_HEADER: APIConstants.APPLICATION_JSON},
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-    with urllib.request.urlopen(request, timeout=APIConstants.DEFAULT_HTTP_TIMEOUT, context=ssl_ctx) as response:
+    with urllib.request.urlopen(request, timeout=30, context=ssl_ctx) as response:
         return json.loads(response.read().decode("utf-8"))

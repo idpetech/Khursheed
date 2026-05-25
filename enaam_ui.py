@@ -62,7 +62,7 @@ def init_session_state():
 
 def render_chat_interface():
     """Render the chat interface with context persistence"""
-    st.header("🤖 Hey Enaam Chat")
+    st.header("🤖 Hey Enaam")
     
     # Initialize session
     session_id = st.session_state.chat_session_id
