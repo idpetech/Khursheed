@@ -141,6 +141,8 @@ class Manager:
             SELECT executed_at
             FROM skill_runs
             WHERE task_id = ? AND skill_name = ?
+            ORDER BY executed_at DESC
+            LIMIT 1
             """,
             (task_id, skill_name),
         )
@@ -181,16 +183,18 @@ class Manager:
         ]
 
     def _record_run(self, task_id: str, skill_name: str, result: Dict[str, Any]) -> None:
+        import uuid
+        run_id = str(uuid.uuid4())
         executed_at = datetime.now(timezone.utc).isoformat()
         payload = json.dumps(result)
+        status = "completed"  # Default status for successful runs
+        
         with self._connection:
             self._connection.execute(
                 """
-                INSERT INTO skill_runs (task_id, skill_name, executed_at, result_json)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(task_id, skill_name)
-                DO UPDATE SET executed_at = excluded.executed_at,
-                              result_json = excluded.result_json
+                INSERT INTO skill_runs 
+                (run_id, task_id, skill_name, executed_at, result_json, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (task_id, skill_name, executed_at, payload),
+                (run_id, task_id, skill_name, executed_at, payload, status, executed_at),
             )
