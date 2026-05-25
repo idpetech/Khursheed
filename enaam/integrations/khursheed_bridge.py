@@ -1,7 +1,7 @@
 """
-Khursheed Bridge - Thin wrapper using Victor orchestrator
+Khursheed Bridge - Thin wrapper using Enaam orchestrator
 
-This module provides a bridge to call Victor orchestrator while maintaining
+This module provides a bridge to call Enaam orchestrator while maintaining
 the Enaam API interface for backward compatibility.
 """
 
@@ -9,11 +9,11 @@ import logging
 import time
 from typing import Any, Dict, Optional
 
-# Import Victor adapter for thin bridge layer
+# Import Enaam adapter for thin bridge layer
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-from enaam_victor_adapter import get_enaam_adapter
+from enaam_adapter import get_enaam_adapter
 
 from ..core.container import resolve_optional
 from ..core.error_handler import (
@@ -52,12 +52,12 @@ from ..core.config_loader import get_config, EmailConfig
 
 class KhursheedBridge:
     """
-    Thin bridge to Victor orchestrator maintaining Enaam API compatibility.
+    Thin bridge to Enaam orchestrator maintaining Enaam API compatibility.
     """
     
     def __init__(self, logger: Optional[EnaamLogger] = None, email_config: Optional[EmailConfig] = None) -> None:
         """
-        Initialize KhursheedBridge with Victor adapter.
+        Initialize KhursheedBridge with Enaam adapter.
         
         Args:
             logger: Logger instance. If None, uses adapter's logger.
@@ -136,39 +136,39 @@ class KhursheedBridge:
                 return error_response
     
     def weekly_digest(self) -> dict[str, Any]:
-        """Generate weekly digest via Victor adapter"""
+        """Generate weekly digest via Enaam adapter"""
         return self._adapter.weekly_digest()
     
     def email_summary(self) -> dict[str, Any]:
-        """Check emails via Victor adapter"""
+        """Check emails via Enaam adapter"""
         return self._adapter.email_summary()
     
     def weekly_monday_9am_digest(self) -> dict[str, Any]:
-        """Monday 9 AM weekly digest via Victor adapter"""
+        """Monday 9 AM weekly digest via Enaam adapter"""
         return self._adapter.weekly_monday_9am_digest()
     
     def lead_generation_run(self) -> dict[str, Any]:
-        """Lead generation automation via Victor adapter"""
+        """Lead generation automation via Enaam adapter"""
         return self._adapter.lead_generation_run()
     
     def email_triage_run(self) -> dict[str, Any]:
-        """Email triage automation via Victor adapter"""
+        """Email triage automation via Enaam adapter"""
         return self._adapter.email_triage_run()
     
     def lead_scan(self) -> dict[str, Any]:
-        """Lead scan via Victor adapter"""
+        """Lead scan via Enaam adapter"""
         return self._adapter.lead_scan()
     
     def executive_summary(self) -> dict[str, Any]:
-        """Executive summary via Victor adapter"""
+        """Executive summary via Enaam adapter"""
         return self._adapter.executive_summary()
     
     def run_scheduled_tasks(self) -> dict[str, Any]:
-        """Run scheduled tasks via Victor adapter"""
+        """Run scheduled tasks via Enaam adapter"""
         return self._adapter.run_scheduled_tasks()
     
     # ENAAM STATE AND LOGGING FUNCTIONS
     
     def get_execution_logs(self, limit: int = 10) -> dict[str, Any]:
-        """Get execution logs via Victor adapter"""
+        """Get execution logs via Enaam adapter"""
         return self._adapter.get_execution_logs(limit)

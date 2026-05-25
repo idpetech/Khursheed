@@ -1,21 +1,21 @@
 """
-Enaam Victor Adapter
-Thin adapter layer connecting Enaam MCP to Victor orchestrator
+Enaam Adapter
+Thin adapter layer connecting Enaam MCP to Enaam orchestrator
 """
 
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from victor_orchestrator import execute_command, get_orchestrator
+from enaam_orchestrator import execute_command, get_orchestrator
 from enaam.core.logging import EnaamLogger
 from enaam.core.enums import ResponseStatus, SourceType, DataFields
 
 
-class EnaamVictorAdapter:
+class EnaamAdapter:
     """
-    Thin adapter connecting Enaam MCP layer to Victor orchestrator
-    Maintains Enaam logging while using Victor as execution engine
+    Thin adapter connecting Enaam MCP layer to Enaam orchestrator
+    Maintains Enaam logging while using unified orchestrator as execution engine
     """
     
     def __init__(self, logger: Optional[EnaamLogger] = None):
@@ -65,8 +65,8 @@ class EnaamVictorAdapter:
                 (datetime.now(timezone.utc) - start_time).total_seconds() * 1000
             )
             
-            # Convert Victor response to Enaam format
-            enaam_result = self._convert_victor_to_enaam_response(result, function_name)
+            # Convert orchestrator response to Enaam format
+            enaam_result = self._convert_orchestrator_to_enaam_response(result, function_name)
             
             # Log execution
             self._log_execution(function_name, context or {}, enaam_result, execution_time_ms)
@@ -93,20 +93,20 @@ class EnaamVictorAdapter:
             
             return error_result
     
-    def _convert_victor_to_enaam_response(
+    def _convert_orchestrator_to_enaam_response(
         self, 
-        victor_result: Dict[str, Any], 
+        orchestrator_result: Dict[str, Any], 
         function_name: str
     ) -> Dict[str, Any]:
-        """Convert Victor response format to Enaam response format"""
+        """Convert orchestrator response format to Enaam response format"""
         
         # Extract status
-        status = ResponseStatus.SUCCESS.value if victor_result.get("status") == "success" else ResponseStatus.ERROR.value
+        status = ResponseStatus.SUCCESS.value if orchestrator_result.get("status") == "success" else ResponseStatus.ERROR.value
         
         # Build Enaam-style response
         enaam_response = {
             DataFields.STATUS.value: status,
-            DataFields.SOURCE.value: SourceType.VICTOR.value,
+            DataFields.SOURCE.value: SourceType.ENAAM.value,
             DataFields.ACTION.value: function_name,
             DataFields.DATA.value: {},
             "next_steps": []
@@ -114,39 +114,39 @@ class EnaamVictorAdapter:
         
         # Map specific response data
         if status == ResponseStatus.SUCCESS.value:
-            if "summary" in victor_result:
-                enaam_response[DataFields.DATA.value][DataFields.SUMMARY.value] = victor_result["summary"]
+            if "summary" in orchestrator_result:
+                enaam_response[DataFields.DATA.value][DataFields.SUMMARY.value] = orchestrator_result["summary"]
                 enaam_response["next_steps"] = ["Review generated summary", "Take action on key insights"]
                 
-            elif "timeline" in victor_result:
-                enaam_response[DataFields.DATA.value]["timeline"] = victor_result["timeline"]
-                enaam_response[DataFields.DATA.value]["count"] = victor_result.get("count", 0)
+            elif "timeline" in orchestrator_result:
+                enaam_response[DataFields.DATA.value]["timeline"] = orchestrator_result["timeline"]
+                enaam_response[DataFields.DATA.value]["count"] = orchestrator_result.get("count", 0)
                 enaam_response["next_steps"] = ["Review recent activity", "Check for any failed operations"]
                 
-            elif "pending_actions" in victor_result:
-                enaam_response[DataFields.DATA.value]["pending_actions"] = victor_result["pending_actions"]
-                enaam_response[DataFields.DATA.value]["count"] = victor_result.get("count", 0)
+            elif "pending_actions" in orchestrator_result:
+                enaam_response[DataFields.DATA.value]["pending_actions"] = orchestrator_result["pending_actions"]
+                enaam_response[DataFields.DATA.value]["count"] = orchestrator_result.get("count", 0)
                 enaam_response["next_steps"] = ["Review pending actions", "Approve or reject as needed"]
                 
-            elif "skills" in victor_result:
-                enaam_response[DataFields.DATA.value]["skills"] = victor_result["skills"]
-                enaam_response[DataFields.DATA.value]["count"] = victor_result.get("count", 0)
+            elif "skills" in orchestrator_result:
+                enaam_response[DataFields.DATA.value]["skills"] = orchestrator_result["skills"]
+                enaam_response[DataFields.DATA.value]["count"] = orchestrator_result.get("count", 0)
                 enaam_response["next_steps"] = ["Review available skills", "Test skills if needed"]
                 
-            elif "result" in victor_result:
+            elif "result" in orchestrator_result:
                 # Skill execution result
-                enaam_response[DataFields.DATA.value] = victor_result["result"]
+                enaam_response[DataFields.DATA.value] = orchestrator_result["result"]
                 enaam_response["next_steps"] = ["Review skill execution result"]
                 
             else:
                 # Generic success response
-                enaam_response[DataFields.DATA.value] = victor_result
+                enaam_response[DataFields.DATA.value] = orchestrator_result
                 enaam_response["next_steps"] = ["Operation completed successfully"]
         else:
             # Error response
             enaam_response[DataFields.DATA.value] = {
-                "error": victor_result.get("message", "Unknown error"),
-                "run_id": victor_result.get("run_id")
+                "error": orchestrator_result.get("message", "Unknown error"),
+                "run_id": orchestrator_result.get("run_id")
             }
             enaam_response["next_steps"] = ["Check error logs", "Retry operation if appropriate"]
         
@@ -232,12 +232,12 @@ class EnaamVictorAdapter:
 
 
 # Create singleton adapter instance
-_adapter_instance: Optional[EnaamVictorAdapter] = None
+_adapter_instance: Optional[EnaamAdapter] = None
 
 
-def get_enaam_adapter() -> EnaamVictorAdapter:
+def get_enaam_adapter() -> EnaamAdapter:
     """Get singleton Enaam adapter instance"""
     global _adapter_instance
     if _adapter_instance is None:
-        _adapter_instance = EnaamVictorAdapter()
+        _adapter_instance = EnaamAdapter()
     return _adapter_instance

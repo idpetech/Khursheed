@@ -1,5 +1,5 @@
 """
-Victor-style Command Center UI
+Enaam Command Center UI
 Streamlit interface with unified timeline, review queue, and chat context
 """
 
@@ -11,8 +11,8 @@ from typing import Dict, Any, List
 import streamlit as st
 import pandas as pd
 
-# Import Victor orchestrator and related components
-from victor_orchestrator import get_orchestrator, execute_command
+# Import Enaam orchestrator and related components
+from enaam_orchestrator import get_orchestrator, execute_command
 from llm_agent import HeyEmanAgent
 
 # Import chat context with fallback
@@ -51,7 +51,7 @@ def init_session_state():
     if 'orchestrator' not in st.session_state:
         st.session_state.orchestrator = get_orchestrator()
         # Initialize skills on first load
-        from initialize_victor import initialize_skills
+        from initialize_enaam import initialize_skills
         with st.spinner("Initializing skills..."):
             skills = initialize_skills()
             st.success(f"✓ Initialized {len(skills)} skills")
@@ -494,7 +494,7 @@ def render_system_status():
 
 
 def main():
-    """Main Victor UI application"""
+    """Main Enaam UI application"""
     st.set_page_config(
         page_title="Enaam Command Center",
         page_icon="🤖",

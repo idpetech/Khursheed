@@ -1,11 +1,11 @@
 """
-Initialize Victor orchestrator with all available skills
+Initialize Enaam orchestrator with all available skills
 This ensures skills are registered when the system starts
 """
 
 def initialize_skills():
-    """Initialize Victor orchestrator with all available skills"""
-    from victor_orchestrator import get_orchestrator
+    """Initialize Enaam orchestrator with all available skills"""
+    from enaam_orchestrator import get_orchestrator
     from skills import EchoSkill, LeadScoutSkill, SifterSkill, TimestampSkill
     
     orchestrator = get_orchestrator()
