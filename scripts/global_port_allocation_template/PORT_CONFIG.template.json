@@ -1,0 +1,52 @@
+{
+  "project_name": "PROJECT_NAME_PLACEHOLDER",
+  "port_range": [8500, 8509],
+  "base_port": 8500,
+  "services": {
+    "main_app": {
+      "port": 8500,
+      "type": "streamlit|flask|fastapi",
+      "file": "app.py",
+      "command": "streamlit run {file} --server.port {port} --server.address 0.0.0.0",
+      "description": "Main application interface",
+      "required": true
+    },
+    "api_server": {
+      "port": 8501,
+      "type": "flask|fastapi",
+      "file": "api.py", 
+      "command": "python {file}",
+      "description": "API server",
+      "required": false
+    },
+    "admin_ui": {
+      "port": 8502,
+      "type": "streamlit|flask",
+      "file": "admin.py",
+      "command": "streamlit run {file} --server.port {port} --server.address 0.0.0.0",
+      "description": "Administrative interface",
+      "required": false
+    }
+  },
+  "development_ports": [8505, 8506, 8507],
+  "testing_ports": [8508, 8509],
+  "environment_overrides": {
+    "development": {
+      "main_app": 8505
+    },
+    "staging": {
+      "main_app": 8506  
+    },
+    "testing": {
+      "main_app": 8508
+    }
+  },
+  "health_check_urls": {
+    "main_app": "http://localhost:{port}",
+    "api_server": "http://localhost:{port}/health"
+  },
+  "dependencies": {
+    "startup_order": ["api_server", "main_app", "admin_ui"],
+    "required_services": ["main_app"]
+  }
+}
