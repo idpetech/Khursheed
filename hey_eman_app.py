@@ -103,4 +103,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Legacy app - use development port to avoid conflict with main Enaam UI
+    import sys
+    if "--server.port" not in sys.argv and "--server-port" not in sys.argv:
+        sys.argv.extend(["--server.port", "8510"])
     main()

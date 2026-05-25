@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from database_migrations import DatabaseMigrations
 from manager import Manager
 from skills.base import Skill
+from enaam_skill_loader import DatabaseSkillLoader, get_skill_loader
 
 
 class SkillRegistry:
@@ -291,8 +292,12 @@ class VictorOrchestrator:
         self.manager = Manager(db_path)
         self.skill_registry = SkillRegistry(db_path)
         self.pending_actions = PendingActionManager(db_path)
+        self.skill_loader = DatabaseSkillLoader(db_path)
         self.scheduled_jobs = ScheduledJobManager(db_path)
         self.logger = logging.getLogger("victor_orchestrator")
+        
+        # Load skills from database on initialization
+        self._load_skills_from_database()
         
         # Initialize database
         self._initialize_database()
@@ -302,6 +307,44 @@ class VictorOrchestrator:
         migrations = DatabaseMigrations(self.db_path)
         migrations.run_all_migrations()
         
+    def _load_skills_from_database(self) -> None:
+        """Load all enabled skills from database configuration"""
+        try:
+            loaded_skills = self.skill_loader.load_all_enabled_skills()
+            
+            # Register loaded skills in both manager and registry
+            for skill_name, skill_instance in loaded_skills.items():
+                self.manager.register(skill_instance)
+                self.skill_registry.register_skill(skill_instance)
+            
+            self.logger.info(f"Loaded {len(loaded_skills)} skills from database configuration")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load skills from database: {e}")
+    
+    def reload_skill_from_database(self, skill_name: str) -> bool:
+        """Reload a specific skill from database configuration"""
+        try:
+            success = self.skill_loader.reload_skill(skill_name)
+            if success:
+                # Update manager and registry if skill was reloaded
+                reloaded_skill = self.skill_loader.get_loaded_skill(skill_name)
+                if reloaded_skill:
+                    self.manager.register(reloaded_skill)
+                    self.skill_registry.register_skill(reloaded_skill)
+                    self.logger.info(f"Successfully reloaded skill: {skill_name}")
+                else:
+                    # Skill was disabled/unloaded
+                    self.logger.info(f"Skill {skill_name} was unloaded (disabled or removed)")
+            return success
+        except Exception as e:
+            self.logger.error(f"Failed to reload skill {skill_name}: {e}")
+            return False
+    
+    def get_skill_load_status(self) -> Dict[str, Any]:
+        """Get status of all skills (loaded, enabled, errors)"""
+        return self.skill_loader.get_skill_load_status()
+
     def register_skill(self, skill: Skill) -> None:
         """Register skill in both manager and registry"""
         self.manager.register(skill)
@@ -354,6 +397,10 @@ class VictorOrchestrator:
                 return self._handle_run_scheduled_jobs(run_id, context)
             elif command == "list_skills":
                 return self._handle_list_skills(run_id, context)
+            elif command == "reload_skill":
+                return self._handle_reload_skill(run_id, context)
+            elif command == "get_skill_status":
+                return self._handle_get_skill_status(run_id, context)
             else:
                 return {
                     "status": "error",
@@ -362,7 +409,8 @@ class VictorOrchestrator:
                     "available_commands": [
                         "run_skill", "check_email", "executive_summary", 
                         "lead_generation", "get_timeline", "get_pending_actions",
-                        "approve_action", "reject_action", "run_scheduled_jobs", "list_skills"
+                        "approve_action", "reject_action", "run_scheduled_jobs", "list_skills",
+                        "reload_skill", "get_skill_status"
                     ]
                 }
                 
@@ -624,6 +672,58 @@ class VictorOrchestrator:
                 "status": "error",
                 "run_id": run_id,
                 "message": f"Failed to list skills: {str(e)}"
+            }
+    
+    def _handle_reload_skill(self, run_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Reload a specific skill from database"""
+        try:
+            skill_name = context.get("skill_name")
+            if not skill_name:
+                return {
+                    "status": "error",
+                    "run_id": run_id,
+                    "message": "skill_name is required"
+                }
+            
+            success = self.reload_skill_from_database(skill_name)
+            
+            if success:
+                return {
+                    "status": "success",
+                    "run_id": run_id,
+                    "message": f"Skill '{skill_name}' reloaded successfully"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "run_id": run_id,
+                    "message": f"Failed to reload skill '{skill_name}'"
+                }
+                
+        except Exception as e:
+            return {
+                "status": "error",
+                "run_id": run_id,
+                "message": f"Failed to reload skill: {str(e)}"
+            }
+    
+    def _handle_get_skill_status(self, run_id: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Get status of all skills (loaded, enabled, errors)"""
+        try:
+            status = self.get_skill_load_status()
+            
+            return {
+                "status": "success",
+                "run_id": run_id,
+                "skill_status": status,
+                "count": len(status)
+            }
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "run_id": run_id,
+                "message": f"Failed to get skill status: {str(e)}"
             }
             
     def _execute_approved_action(self, action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:

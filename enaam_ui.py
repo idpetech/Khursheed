@@ -589,4 +589,9 @@ def main():
 
 
 if __name__ == "__main__":
+    # Force specific port to avoid conflicts with other services
+    import sys
+    # Only add port argument if not already specified
+    if "--server.port" not in sys.argv and "--server-port" not in sys.argv:
+        sys.argv.extend(["--server.port", "8501"])
     main()

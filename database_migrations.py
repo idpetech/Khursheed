@@ -42,6 +42,7 @@ class DatabaseMigrations:
                 (4, "create_notification_log", self._create_notification_log_table),
                 (5, "create_unified_timeline_view", self._create_unified_timeline_view),
                 (6, "create_skill_registry", self._create_skill_registry_table),
+                (7, "create_skill_configuration", self._create_skill_configuration_tables),
             ]
             
             for version, name, migration_func in migrations:
@@ -362,6 +363,106 @@ class DatabaseMigrations:
             
             ORDER BY event_time DESC
         """)
+    
+    def _create_skill_configuration_tables(self, conn: sqlite3.Connection) -> None:
+        """Create skill configuration and management tables"""
+        
+        # Create skill_configurations table for managing enabled/disabled skills
+        conn.execute("""
+            CREATE TABLE skill_configurations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT UNIQUE NOT NULL,
+                skill_class TEXT NOT NULL,
+                skill_module TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                config_json TEXT DEFAULT '{}',
+                description TEXT,
+                version TEXT DEFAULT '1.0.0',
+                dependencies_json TEXT DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                last_loaded_at TEXT,
+                load_error TEXT
+            )
+        """)
+        
+        # Create skill_api_keys table for managing API keys per skill
+        conn.execute("""
+            CREATE TABLE skill_api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT NOT NULL,
+                key_name TEXT NOT NULL,
+                key_value TEXT NOT NULL,
+                encrypted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(skill_name, key_name),
+                FOREIGN KEY (skill_name) REFERENCES skill_configurations(skill_name) ON DELETE CASCADE
+            )
+        """)
+        
+        # Create skill_usage_stats table for tracking skill usage
+        conn.execute("""
+            CREATE TABLE skill_usage_stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                skill_name TEXT NOT NULL,
+                execution_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                total_execution_time_ms INTEGER NOT NULL DEFAULT 0,
+                avg_execution_time_ms REAL NOT NULL DEFAULT 0,
+                last_executed_at TEXT,
+                stats_date TEXT NOT NULL DEFAULT (date('now')),
+                UNIQUE(skill_name, stats_date),
+                FOREIGN KEY (skill_name) REFERENCES skill_configurations(skill_name) ON DELETE CASCADE
+            )
+        """)
+        
+        # Create indexes for efficient querying
+        conn.execute("CREATE INDEX idx_skill_configs_enabled ON skill_configurations(enabled)")
+        conn.execute("CREATE INDEX idx_skill_configs_name ON skill_configurations(skill_name)")
+        conn.execute("CREATE INDEX idx_skill_api_keys_name ON skill_api_keys(skill_name)")
+        conn.execute("CREATE INDEX idx_skill_usage_stats_name ON skill_usage_stats(skill_name)")
+        conn.execute("CREATE INDEX idx_skill_usage_stats_date ON skill_usage_stats(stats_date)")
+        
+        # Create trigger to update updated_at timestamp
+        conn.execute("""
+            CREATE TRIGGER update_skill_config_timestamp 
+            AFTER UPDATE ON skill_configurations
+            BEGIN
+                UPDATE skill_configurations 
+                SET updated_at = datetime('now') 
+                WHERE id = NEW.id;
+            END
+        """)
+        
+        conn.execute("""
+            CREATE TRIGGER update_skill_api_keys_timestamp 
+            AFTER UPDATE ON skill_api_keys
+            BEGIN
+                UPDATE skill_api_keys 
+                SET updated_at = datetime('now') 
+                WHERE id = NEW.id;
+            END
+        """)
+        
+        # Insert default skill configurations for existing skills
+        default_skills = [
+            ('echo', 'EchoSkill', 'skills.echo', 1, '{}', 'Simple echo skill for testing'),
+            ('timestamp', 'TimestampSkill', 'skills.timestamp', 1, '{}', 'Returns current timestamp'),
+            ('calculator', 'CalculatorSkill', 'skills.calculator', 1, '{}', 'Basic mathematical calculations'),
+            ('weather', 'WeatherSkill', 'skills.weather', 1, '{"api_key_required": true}', 'Weather information service'),
+            ('file_analyzer', 'FileAnalyzerSkill', 'skills.file_analyzer', 1, '{}', 'Analyzes files and directory structures'),
+            ('lead_scout', 'LeadScoutSkill', 'skills.lead_scout', 1, '{}', 'Lead generation and scouting'),
+            ('sifter', 'SifterSkill', 'skills.sifter', 1, '{}', 'Data sifting and analysis'),
+        ]
+        
+        for skill_name, skill_class, skill_module, enabled, config_json, description in default_skills:
+            conn.execute("""
+                INSERT OR IGNORE INTO skill_configurations 
+                (skill_name, skill_class, skill_module, enabled, config_json, description)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (skill_name, skill_class, skill_module, enabled, config_json, description))
 
 
 def migrate_database(db_path: str = "khursheed.db") -> None:
