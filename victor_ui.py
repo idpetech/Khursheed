@@ -50,6 +50,11 @@ def init_session_state():
         
     if 'orchestrator' not in st.session_state:
         st.session_state.orchestrator = get_orchestrator()
+        # Initialize skills on first load
+        from initialize_victor import initialize_skills
+        with st.spinner("Initializing skills..."):
+            skills = initialize_skills()
+            st.success(f"✓ Initialized {len(skills)} skills")
         
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
