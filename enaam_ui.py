@@ -89,6 +89,25 @@ def render_chat_interface():
                     response_text = str(turn.assistant_response)
                 st.write(response_text)
     
+    # Auto-focus chat input with JavaScript
+    st.markdown("""
+    <script>
+    // Auto-focus the chat input
+    function focusChatInput() {
+        const chatInput = document.querySelector('textarea[data-testid="stChatInput"]');
+        if (chatInput && chatInput !== document.activeElement) {
+            chatInput.focus();
+        }
+    }
+    
+    // Focus on page load
+    window.addEventListener('load', focusChatInput);
+    
+    // Focus after each interaction (with slight delay)
+    setTimeout(focusChatInput, 100);
+    </script>
+    """, unsafe_allow_html=True)
+    
     # Chat input
     if prompt := st.chat_input("Ask Enaam anything..."):
         # Display user message
@@ -118,6 +137,9 @@ def render_chat_interface():
                         user_input=prompt,
                         assistant_response={"content": response, "interface": "streamlit_ui"}
                     )
+                    
+                    # Trigger rerun to refresh chat and refocus input
+                    st.rerun()
                     
                 except Exception as e:
                     error_msg = f"Error processing request: {str(e)}"
