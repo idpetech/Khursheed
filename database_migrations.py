@@ -43,6 +43,7 @@ class DatabaseMigrations:
                 (5, "create_unified_timeline_view", self._create_unified_timeline_view),
                 (6, "create_skill_registry", self._create_skill_registry_table),
                 (7, "create_skill_configuration", self._create_skill_configuration_tables),
+                (8, "add_pending_actions_source_key", self._add_pending_actions_source_key),
             ]
             
             for version, name, migration_func in migrations:
@@ -463,6 +464,25 @@ class DatabaseMigrations:
                 (skill_name, skill_class, skill_module, enabled, config_json, description)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (skill_name, skill_class, skill_module, enabled, config_json, description))
+
+    def _add_pending_actions_source_key(self, conn: sqlite3.Connection) -> None:
+        """Migration 8: Add source_key column to pending_actions table"""
+        # Check if source_key column already exists
+        cursor = conn.execute("PRAGMA table_info(pending_actions)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'source_key' not in columns:
+            # Add the source_key column
+            conn.execute("""
+                ALTER TABLE pending_actions 
+                ADD COLUMN source_key TEXT
+            """)
+            
+            # Create unique index on source_key (only for non-null values)
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_actions_source_key
+                ON pending_actions(source_key) WHERE source_key IS NOT NULL
+            """)
 
 
 def migrate_database(db_path: str = "khursheed.db") -> None:

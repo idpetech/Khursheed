@@ -22,6 +22,14 @@
           "Warehouse optimization consulting"
         ]
       }
+    },
+    {
+      "id": "task-sifter-daily",
+      "skills": ["sifter"],
+      "interval_days": 1,
+      "payload": {
+        "max_messages": 100
+      }
     }
   ]
 }
