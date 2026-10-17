@@ -5,6 +5,18 @@
       "host": "imap.mail.yahoo.com",
       "username": "techvizpro@yahoo.com",
       "password_env": "YAHOO_PASSWORD"
+    },
+    {
+      "name": "yahoo2",
+      "host": "imap.mail.yahoo.com",
+      "username": "haseeb_toor@yahoo.com",
+      "password_env": "YAHOO_PASSWORD_2"
+    },
+    {
+      "name": "gmail",
+      "host": "imap.gmail.com",
+      "username": "haseebutoor@gmail.com",
+      "password_env": "GMAIL_PASSWORD"
     }
   ]
 }

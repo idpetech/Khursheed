@@ -10,6 +10,13 @@ from skills.calculator import CalculatorSkill
 from skills.weather import WeatherSkill
 from skills.file_analyzer import FileAnalyzerSkill
 
+# Lead generation skills
+from skills.cto_radar import CtoRadarSkill
+from skills.icp_prospector import IcpProspectorSkill
+
+# Composite skills
+from skills.blogger import BloggerSkill
+
 __all__ = [
     "Skill",
     "EchoSkill",
@@ -20,4 +27,7 @@ __all__ = [
     "CalculatorSkill",
     "WeatherSkill",
     "FileAnalyzerSkill",
+    "CtoRadarSkill",
+    "IcpProspectorSkill",
+    "BloggerSkill",
 ]

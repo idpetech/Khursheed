@@ -1,0 +1,22 @@
+{
+  "servers": {
+    "business_assessment": {
+      "base_url": "http://localhost:8500",
+      "auth_env": "BUSINESS_ASSESSMENT_API_KEY",
+      "health_path": "/health",
+      "timeout_seconds": 30
+    },
+    "insight_vault": {
+      "base_url": "http://localhost:8501",
+      "auth_env": "INSIGHT_VAULT_API_KEY", 
+      "health_path": "/health",
+      "timeout_seconds": 30
+    },
+    "cto_dashboard": {
+      "base_url": "http://localhost:8502",
+      "auth_env": "CTO_DASHBOARD_API_KEY",
+      "health_path": "/health", 
+      "timeout_seconds": 30
+    }
+  }
+}

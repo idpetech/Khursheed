@@ -73,6 +73,7 @@ class SifterSkill(Skill):
                             continue
                         subject = self._decode_header(msg.get("Subject", ""))
                         sender = self._decode_header(msg.get("From", ""))
+                        sent_at = self._decode_header(msg.get("Date") or "")
                         body = self._extract_body(msg)
                         category = self._categorize(subject, sender, body)
                         expense = self._extract_expense(subject, sender, body)
@@ -80,7 +81,7 @@ class SifterSkill(Skill):
                         # Add financial detection (new layer on top)
                         message_id = msg.get("Message-ID", f"unknown-{msg_id.decode()}")
                         financial_detection = self._detect_financial_urgency(
-                            subject, sender, body, message_id, account.name
+                            subject, sender, body, message_id, account.name, sent_at
                         )
                         if financial_detection:
                             priority_actions.append(financial_detection)
@@ -89,6 +90,7 @@ class SifterSkill(Skill):
                             {
                                 "subject": subject,
                                 "from": sender,
+                                "date": sent_at,
                                 "category": category,
                                 "expense": expense,
                             }
@@ -231,7 +233,15 @@ class SifterSkill(Skill):
             logger.warning("No email accounts configured for Sifter skill.")
         return accounts
 
-    def _detect_financial_urgency(self, subject: str, sender: str, body: str, message_id: str, account_name: str) -> Optional[Dict[str, Any]]:
+    def _detect_financial_urgency(
+        self,
+        subject: str,
+        sender: str,
+        body: str,
+        message_id: str,
+        account_name: str,
+        sent_at: str = "",
+    ) -> Optional[Dict[str, Any]]:
         """
         Detect financial urgency in email and escalate to priority_inbox.
         Returns priority action info if escalation was created, None otherwise.
@@ -253,7 +263,7 @@ class SifterSkill(Skill):
             
             # Create priority action
             action_id = self._create_priority_action(
-                extraction, subject, sender, message_id, account_name, priority, expires_at
+                extraction, subject, sender, message_id, account_name, priority, expires_at, sent_at
             )
             
             return {
@@ -276,11 +286,15 @@ class SifterSkill(Skill):
             "your invoice", "new statement", "billing statement"
         ]
         
-        # overdue_payment keywords  
+        # overdue_payment keywords
         overdue_keywords = [
-            "past due", "overdue", "payment failed", "final notice", "second notice",
-            "account suspended", "service disconnection", "payment overdue"
+            "past due", "overdue", "payment failed",
+            "account suspended", "service disconnection", "payment overdue",
         ]
+        # These phrases also appear in sales mail ("final notice: 30% off").
+        overdue_with_payment = ["final notice", "second notice"]
+        promo_markers = ["% off", "discount", "coupon", "promo", "ends at midnight"]
+        payment_markers = ["invoice", "past due", "amount due", "payment due", "payment failed", "bill"]
         
         # trial_ending keywords
         trial_keywords = [
@@ -288,10 +302,19 @@ class SifterSkill(Skill):
             "auto-renew on", "subscription renewal", "trial expiring", "trial period ends"
         ]
         
-        # Check most specific patterns first 
+        # A discount email is not a bill, even when the subject says "final notice".
+        if any(marker in text for marker in promo_markers) and not any(
+            marker in text for marker in payment_markers
+        ):
+            return None
+
+        notice_is_a_bill = any(keyword in text for keyword in overdue_with_payment) and any(
+            marker in text for marker in payment_markers
+        )
+        # Check most specific patterns first
         if any(keyword in text for keyword in trial_keywords):
             return "trial_ending"
-        elif any(keyword in text for keyword in overdue_keywords):
+        elif any(keyword in text for keyword in overdue_keywords) or notice_is_a_bill:
             return "overdue_payment"
         elif any(keyword in text for keyword in new_bill_keywords):
             return "new_bill"
@@ -361,7 +384,7 @@ class SifterSkill(Skill):
                 vendor = domain_match.group(1).capitalize()
         
         # Try to extract amount
-        amount_match = re.search(r"[\$€£¥]?(\d+\.?\d*)", text)
+        amount_match = re.search(r"(?<![\d.])[$€£¥]?(\d+(?:\.\d+)?)(?![\d.])(?!\s*%)", text)
         amount = float(amount_match.group(1)) if amount_match else None
         
         # Try to extract currency
@@ -439,8 +462,9 @@ class SifterSkill(Skill):
         return 1, None
 
     def _create_priority_action(
-        self, extraction: Dict[str, Any], subject: str, sender: str, 
-        message_id: str, account_name: str, priority: int, expires_at: Optional[str]
+        self, extraction: Dict[str, Any], subject: str, sender: str,
+        message_id: str, account_name: str, priority: int, expires_at: Optional[str],
+        sent_at: str = "",
     ) -> str:
         """Create priority action using priority_inbox"""
         try:
@@ -470,7 +494,8 @@ class SifterSkill(Skill):
                     "message_id": message_id,
                     "account": account_name,
                     "subject": subject,
-                    "from": sender
+                    "from": sender,
+                    "sent_at": sent_at,
                 },
                 priority=priority,
                 source_key=source_key,

@@ -28,7 +28,7 @@ class DatabaseMigrations:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
         
-    def run_all_migrations(self) -> None:
+    def run_all_migrations(self, verbose: bool = True) -> None:
         """Run all migrations in sequence"""
         with self.get_connection() as conn:
             # Create migration tracking table first
@@ -44,15 +44,19 @@ class DatabaseMigrations:
                 (6, "create_skill_registry", self._create_skill_registry_table),
                 (7, "create_skill_configuration", self._create_skill_configuration_tables),
                 (8, "add_pending_actions_source_key", self._add_pending_actions_source_key),
+                (9, "create_open_loops", self._create_open_loops_table),
+                (10, "create_chat_turns", self._create_chat_turns_table),
             ]
             
             for version, name, migration_func in migrations:
                 if not self._is_migration_applied(conn, version):
-                    print(f"Applying migration {version}: {name}")
+                    if verbose:
+                        print(f"Applying migration {version}: {name}")
                     migration_func(conn)
                     self._mark_migration_applied(conn, version, name)
-                    print(f"✓ Migration {version} completed")
-                else:
+                    if verbose:
+                        print(f"✓ Migration {version} completed")
+                elif verbose:
                     print(f"Migration {version}: {name} already applied")
     
     def _create_migration_table(self, conn: sqlite3.Connection) -> None:
@@ -483,6 +487,46 @@ class DatabaseMigrations:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_actions_source_key
                 ON pending_actions(source_key) WHERE source_key IS NOT NULL
             """)
+
+    def _create_open_loops_table(self, conn: sqlite3.Connection) -> None:
+        """Migration 9: Follow-through items that are not approval-gated side effects."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS open_loops (
+                loop_id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail TEXT,
+                due_at TEXT,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_open_loops_source_key
+            ON open_loops(source_key)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_open_loops_status_created
+            ON open_loops(status, created_at)
+        """)
+
+    def _create_chat_turns_table(self, conn: sqlite3.Connection) -> None:
+        """Migration 10: Hey Eman conversation turns."""
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_turns (
+                turn_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                user_content TEXT NOT NULL,
+                assistant_content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_chat_turns_session_created
+            ON chat_turns(session_id, created_at)
+        """)
 
 
 def migrate_database(db_path: str = "khursheed.db") -> None:

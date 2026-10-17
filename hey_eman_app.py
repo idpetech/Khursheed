@@ -8,7 +8,8 @@ from executive_summary import generate_executive_summary
 from llm_agent import HeyEmanAgent
 from manager import Manager
 from notifications import MarkdownFileNotifier
-from skills import EchoSkill, LeadScoutSkill, SifterSkill, TimestampSkill
+from runtime import prepare_runtime
+from skills_bootstrap import register_default_skills
 
 
 def _load_dotenv(path: str = ".env") -> None:
@@ -71,15 +72,18 @@ def main() -> None:
     st.caption("Lightweight command center for Khursheed.")
 
     _load_dotenv()
+    prepare_runtime()
     manager = Manager()
-    manager.register_many([EchoSkill(), LeadScoutSkill(), SifterSkill(), TimestampSkill()])
+    register_default_skills(manager)
     agent = HeyEmanAgent(manager)
+    if "hey_eman_session_id" not in st.session_state:
+        st.session_state.hey_eman_session_id = "hey-eman"
 
     query = st.text_input("Ask me a command", placeholder="Hey Eman, what are my todos today?")
     if st.button("Submit") and query:
         if os.getenv("OPENAI_API_KEY"):
             try:
-                response = agent.respond(query)
+                response = agent.respond(query, session_id=st.session_state.hey_eman_session_id)
             except Exception as e:
                 st.warning(f"OpenAI API failed: {str(e)[:100]}... Falling back to simple commands.")
                 response = _handle_query(query, manager)

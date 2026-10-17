@@ -1,0 +1,4 @@
+company_name,website,industry,employee_count,funding_stage,has_cto,acquired,hiring_signals_url
+Acme Labs,https://acme.io,saas,32,seed,unknown,no,https://acme.io/careers
+Fintechly,https://fintechly.com,fintech,18,series-a,no,no,https://fintechly.com/jobs
+EduSpark,https://eduspark.io,edtech,45,seed,unknown,unknown,https://eduspark.io/careers

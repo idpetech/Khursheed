@@ -6,6 +6,7 @@ for high-priority items and deduplication based on source keys.
 """
 
 import os
+import json
 import sqlite3
 import uuid
 import logging
@@ -82,7 +83,7 @@ def emit_priority_action(
                     created_at, created_by, status, priority, expires_at, source_key
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                action_id, kind, title, description, str(payload),
+                action_id, kind, title, description, json.dumps(payload, default=str),
                 created_at, "priority_inbox", "pending", priority, expires_at, source_key
             ))
             
@@ -96,6 +97,27 @@ def emit_priority_action(
             
     finally:
         conn.close()
+
+
+def list_priority_actions(
+    min_priority: int = 0, 
+    db_path: str = "khursheed.db"
+) -> Dict[str, Any]:
+    """
+    List priority actions at or above the specified priority level.
+    
+    Args:
+        min_priority: Minimum priority level to include (default: 0 for all)
+        db_path: Path to SQLite database
+        
+    Returns:
+        Dictionary with 'actions' key containing list of actions
+    """
+    try:
+        actions = list_open_priority_actions(min_priority, db_path)
+        return {"actions": actions}
+    except Exception as e:
+        return {"error": f"Failed to list priority actions: {e}", "actions": []}
 
 
 def list_open_priority_actions(

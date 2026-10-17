@@ -87,7 +87,7 @@ class DatabaseSkillLoader:
             return None
     
     def instantiate_skill(self, skill_class: Type[Skill], skill_config: Dict[str, Any]) -> Optional[Skill]:
-        """Instantiate skill with configuration"""
+        """Instantiate skill with configuration and dependency validation"""
         try:
             # Get API keys for this skill
             api_keys = self.get_skill_api_keys(skill_config['skill_name'])
@@ -111,6 +111,9 @@ class DatabaseSkillLoader:
                 if hasattr(skill_instance, 'config'):
                     skill_instance.config = full_config
             
+            # Validate dependencies and set degraded flag if needed
+            self._validate_dependencies(skill_instance, skill_config)
+            
             # Update successful load time
             self._update_skill_load_success(skill_config['skill_name'])
             
@@ -120,6 +123,79 @@ class DatabaseSkillLoader:
             logger.error(f"Failed to instantiate skill {skill_config['skill_name']}: {e}")
             self._update_skill_load_error(skill_config['skill_name'], str(e))
             return None
+
+    def _validate_dependencies(self, skill_instance: Skill, skill_config: Dict[str, Any]) -> None:
+        """Validate skill dependencies and set degraded flag if required deps missing"""
+        skill_name = skill_config['skill_name']
+        dependencies = skill_config.get('dependencies', [])
+        
+        if not dependencies:
+            return
+        
+        missing_required = []
+        missing_optional = []
+        
+        for dep in dependencies:
+            if not isinstance(dep, dict):
+                continue
+                
+            dep_type = dep.get('type')
+            dep_name = dep.get('name') or dep.get('alias') or dep.get('key')
+            is_required = dep.get('required', False)
+            
+            if not dep_type or not dep_name:
+                continue
+            
+            is_available = self._check_dependency_available(dep_type, dep_name)
+            
+            if not is_available:
+                if is_required:
+                    missing_required.append(f"{dep_type}:{dep_name}")
+                else:
+                    missing_optional.append(f"{dep_type}:{dep_name}")
+        
+        # Log missing dependencies
+        if missing_optional:
+            logger.warning(f"Skill '{skill_name}' missing optional dependencies: {missing_optional}")
+        
+        if missing_required:
+            logger.warning(f"Skill '{skill_name}' missing required dependencies: {missing_required}")
+            # Set degraded flag for missing required dependencies
+            skill_instance.degraded = True
+            logger.info(f"Skill '{skill_name}' marked as degraded due to missing required dependencies")
+        
+        # Ensure degraded attribute exists (default to False)
+        if not hasattr(skill_instance, 'degraded'):
+            skill_instance.degraded = False
+
+    def _check_dependency_available(self, dep_type: str, dep_name: str) -> bool:
+        """Check if a dependency is available"""
+        try:
+            if dep_type == 'env':
+                # Check environment variable
+                import os
+                return bool(os.getenv(dep_name))
+                
+            elif dep_type == 'skill':
+                # Check if skill is loaded
+                return dep_name in self._loaded_skills
+                
+            elif dep_type == 'mcp':
+                # Check if MCP service is configured (not necessarily available)
+                try:
+                    from mcp_registry import MCPRegistry
+                    registry = MCPRegistry.load()
+                    return dep_name in registry.list_aliases()
+                except Exception:
+                    return False
+                    
+            else:
+                logger.warning(f"Unknown dependency type: {dep_type}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"Error checking dependency {dep_type}:{dep_name}: {e}")
+            return False
     
     def load_all_enabled_skills(self) -> Dict[str, Skill]:
         """Load all enabled skills from database"""

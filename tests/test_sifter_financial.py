@@ -35,6 +35,8 @@ class TestSifterFinancialDetection(unittest.TestCase):
             # Non-financial
             ("Newsletter update", "marketing@company.com", "Regular content", None),
             ("Welcome aboard!", "hello@startup.com", "Getting started", None),
+            ("Final notice: 30% off ends at midnight", "matt@aihero.dev", "Sale ends tonight", None),
+            ("Final notice", "news@example.com", "Read our latest post", None),
         ]
         
         for subject, sender, body, expected in test_cases:
@@ -59,6 +61,14 @@ class TestSifterFinancialDetection(unittest.TestCase):
         self.assertEqual(result["currency"], "USD")
         self.assertEqual(result["due_date"], "2024-12-31")
         self.assertEqual(result["confidence"], "low")
+
+        promo = self.skill._fallback_extraction(
+            "Final notice: 30% off ends at midnight",
+            "matt@aihero.dev",
+            "Sale ends tonight",
+            "overdue_payment",
+        )
+        self.assertIsNone(promo["amount"])
 
     def test_priority_calculation(self):
         """Test priority and expiry calculation logic"""
@@ -105,7 +115,8 @@ class TestSifterFinancialDetection(unittest.TestCase):
             "MSG123", 
             "test_account",
             priority=2,
-            expires_at="2024-12-31T23:59:59"
+            expires_at="2024-12-31T23:59:59",
+            sent_at="Thu, 28 May 2026 12:00:00 +0000",
         )
         
         self.assertEqual(action_id, "test-action-id-123")
@@ -119,6 +130,8 @@ class TestSifterFinancialDetection(unittest.TestCase):
         self.assertEqual(kwargs["priority"], 2)
         self.assertEqual(kwargs["expires_at"], "2024-12-31T23:59:59")
         self.assertIn("vendor", kwargs["payload"])
+        self.assertEqual(kwargs["payload"]["from"], "billing@testcorp.com")
+        self.assertEqual(kwargs["payload"]["sent_at"], "Thu, 28 May 2026 12:00:00 +0000")
 
     @patch('openai.OpenAI')
     @patch('priority_inbox.emit_priority_action')

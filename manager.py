@@ -1,11 +1,14 @@
 import json
 import sqlite3
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from database_migrations import DatabaseMigrations
 from skills.base import Skill
+from skill_context import SkillContext
+from mcp_registry import MCPRegistry
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -48,7 +51,12 @@ class Manager:
         self._connection_manager = ThreadLocalConnection(self._db_path)
         self._init_lock = threading.RLock()
         self._initialized = False
+        DatabaseMigrations(str(self._db_path)).run_all_migrations(verbose=False)
         self._initialize_database()
+        
+        # Initialize MCP registry and skill context
+        self._mcp_registry = MCPRegistry.load()
+        self._skill_context = SkillContext(self, self._mcp_registry)
 
     @property
     def _connection(self) -> sqlite3.Connection:
@@ -64,14 +72,21 @@ class Manager:
             try:
                 connection = self._connection
                 with connection:
+                    # Append-only schema, matching migration #1 in database_migrations.py.
+                    # IF NOT EXISTS keeps already-migrated databases untouched; fresh
+                    # databases get the full schema that _record_run expects.
                     connection.execute(
                         """
                         CREATE TABLE IF NOT EXISTS skill_runs (
+                            run_id TEXT PRIMARY KEY,
                             task_id TEXT NOT NULL,
                             skill_name TEXT NOT NULL,
                             executed_at TEXT NOT NULL,
                             result_json TEXT NOT NULL,
-                            PRIMARY KEY (task_id, skill_name)
+                            status TEXT NOT NULL DEFAULT 'completed',
+                            error_message TEXT,
+                            execution_time_ms INTEGER,
+                            created_at TEXT NOT NULL DEFAULT (datetime('now'))
                         )
                         """
                     )
@@ -93,7 +108,14 @@ class Manager:
         skill = self._skills.get(skill_name)
         if skill is None:
             raise KeyError(f"Skill '{skill_name}' is not registered.")
-        result = skill.run({"id": task_id, "payload": payload, "skills": [skill_name]})
+        task = {
+            "id": task_id,
+            "payload": payload,
+            "skills": [skill_name],
+            "ctx": self._skill_context,
+            "db_path": str(self._db_path),
+        }
+        result = skill.run(task)
         self._record_run(task_id, skill_name, result)
         return result
 
@@ -113,27 +135,9 @@ class Manager:
         return data.get("tasks", [])
 
     def run_tasks(self, tasks: Iterable[Dict[str, Any]]) -> None:
-        for task in tasks:
-            task_id = task["id"]
-            interval_days = task.get("interval_days")
-            for skill_name in task.get("skills", []):
-                if interval_days is None:
-                    if self._has_run(task_id, skill_name):
-                        continue
-                else:
-                    if not self._is_due(task_id, skill_name, interval_days):
-                        continue
-                skill = self._skills.get(skill_name)
-                if skill is None:
-                    raise KeyError(f"Skill '{skill_name}' is not registered.")
-                result = skill.run(task)
-                self._record_run(task_id, skill_name, result)
+        from schedule_sync import sync_and_run
 
-    def _is_due(self, task_id: str, skill_name: str, interval_days: int) -> bool:
-        last_run_at = self._last_run_at(task_id, skill_name)
-        if last_run_at is None:
-            return True
-        return datetime.now(timezone.utc) - last_run_at >= timedelta(days=interval_days)
+        sync_and_run(self, tasks)
 
     def _last_run_at(self, task_id: str, skill_name: str) -> datetime | None:
         cursor = self._connection.execute(
@@ -150,17 +154,6 @@ class Manager:
         if row is None:
             return None
         return datetime.fromisoformat(row[0])
-
-    def _has_run(self, task_id: str, skill_name: str) -> bool:
-        cursor = self._connection.execute(
-            """
-            SELECT 1
-            FROM skill_runs
-            WHERE task_id = ? AND skill_name = ?
-            """,
-            (task_id, skill_name),
-        )
-        return cursor.fetchone() is not None
 
     def get_runs_since(self, since: datetime) -> List[Dict[str, Any]]:
         cursor = self._connection.execute(
@@ -182,19 +175,25 @@ class Manager:
             for row in cursor.fetchall()
         ]
 
-    def _record_run(self, task_id: str, skill_name: str, result: Dict[str, Any]) -> None:
+    def _record_run(
+        self,
+        task_id: str,
+        skill_name: str,
+        result: Dict[str, Any],
+        status: str = "completed",
+        error_message: str | None = None,
+    ) -> None:
         import uuid
         run_id = str(uuid.uuid4())
         executed_at = datetime.now(timezone.utc).isoformat()
         payload = json.dumps(result)
-        status = "completed"  # Default status for successful runs
-        
+
         with self._connection:
             self._connection.execute(
                 """
-                INSERT INTO skill_runs 
-                (run_id, task_id, skill_name, executed_at, result_json, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO skill_runs
+                (run_id, task_id, skill_name, executed_at, result_json, status, error_message, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, task_id, skill_name, executed_at, payload, status, executed_at),
+                (run_id, task_id, skill_name, executed_at, payload, status, error_message, executed_at),
             )

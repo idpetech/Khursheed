@@ -372,7 +372,7 @@ def render_review_queue():
                                 })
                                 
                                 if approve_result.get("status") == "success":
-                                    st.success("Action approved and executed!")
+                                    st.success(approve_result.get("message") or "Action updated.")
                                     st.rerun()
                                 else:
                                     st.error(f"Failed to approve: {approve_result.get('message')}")

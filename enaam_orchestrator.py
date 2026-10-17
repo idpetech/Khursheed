@@ -296,6 +296,10 @@ class VictorOrchestrator:
         self.scheduled_jobs = ScheduledJobManager(db_path)
         self.logger = logging.getLogger("victor_orchestrator")
         
+        # Register the shared skill set before the database loader reads it.
+        from skills_bootstrap import register_default_skills
+        register_default_skills(self.manager)
+
         # Load skills from database on initialization
         self._load_skills_from_database()
         
@@ -306,6 +310,8 @@ class VictorOrchestrator:
         """Initialize database with latest schema"""
         migrations = DatabaseMigrations(self.db_path)
         migrations.run_all_migrations()
+        from runtime import remove_test_pending_actions
+        remove_test_pending_actions(self.db_path)
         
     def _load_skills_from_database(self) -> None:
         """Load all enabled skills from database configuration"""
@@ -575,16 +581,9 @@ class VictorOrchestrator:
             }
             
         try:
-            result = self.pending_actions.approve_action(action_id, reviewed_by)
-            
-            # If approval was successful, execute the action
-            if result.get("status") == "success":
-                execution_result = self._execute_approved_action(
-                    result["action_type"], 
-                    result["payload"]
-                )
-                result["execution"] = execution_result
-                
+            from action_executor import approve_and_execute
+
+            result = approve_and_execute(self.db_path, action_id, reviewed_by)
             result["run_id"] = run_id
             return result
             
@@ -726,16 +725,6 @@ class VictorOrchestrator:
                 "message": f"Failed to get skill status: {str(e)}"
             }
             
-    def _execute_approved_action(self, action_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute an approved action"""
-        # This would contain the actual execution logic for different action types
-        # For now, return a placeholder
-        return {
-            "status": "executed",
-            "action_type": action_type,
-            "executed_at": datetime.now(timezone.utc).isoformat()
-        }
-        
     def _execute_scheduled_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
         """Execute a scheduled job"""
         try:

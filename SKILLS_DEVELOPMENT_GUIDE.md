@@ -680,5 +680,146 @@ Happy skill development! 🚀
 
 ---
 
-*Last updated: 2026-05-25*
+## Priority Inbox, Lead Skills & Composition Kernel
+
+This section documents the capabilities added by the `priority-inbox-and-leads` work.
+
+### Priority actions (`priority_inbox.py`)
+
+Any skill can escalate a finding into the shared `pending_actions` table:
+
+```python
+import priority_inbox
+
+action_id = priority_inbox.emit_priority_action(
+    kind="overdue_payment",            # free-form category string
+    title="overdue_payment: Acme - 50 USD",
+    description="Subject line / short context",
+    payload={"amount": 50, "message_id": "<...>"},  # JSON-serialized automatically
+    priority=3,                         # 0=low, 1=medium, 2=high, 3=urgent
+    source_key="<sha256 dedup key>",   # REQUIRED for idempotency
+    expires_at="2026-10-10T23:59:59",  # optional ISO timestamp
+)
+```
+
+Read them back (used by the executive summary and the LLM agent):
+
+```python
+open_actions = priority_inbox.list_open_priority_actions(min_priority=2)
+```
+
+**Priority levels**
+
+| priority | meaning | email sent? |
+|----------|---------|-------------|
+| 0 | low      | no |
+| 1 | medium   | no |
+| 2 | high     | yes (if `KHURSHEED_PRIORITY_EMAIL_*` configured) |
+| 3 | urgent   | yes (if configured) |
+
+Email is sent via `notifications.EmailNotifier` only when `priority >= 2`. Missing
+email env vars cause a logged skip, never an exception. Every send/skip is recorded in
+`notification_log` with `related_action_id`.
+
+**`source_key` dedup contract**
+
+`source_key` is backed by a unique partial index (migration #8):
+`CREATE UNIQUE INDEX ... ON pending_actions(source_key) WHERE source_key IS NOT NULL`.
+
+`emit_priority_action` is idempotent: if a row with the same `source_key` already exists,
+it returns the existing `action_id` without inserting a new row or re-sending email.
+Use a stable, content-derived key so re-runs don't create duplicates. Conventions:
+
+- Sifter emails: `sha256(f"{account_name}|{rfc822_message_id}|{kind}")`
+- Blogger drafts: `sha256(f"{theme}{iso_date}")`
+
+### Sifter financial detection
+
+Sifter now runs a two-stage detector on each email (on top of the existing categorize /
+expense flow, which is unchanged):
+
+1. **Keyword prefilter** (free) flags candidates for `new_bill`, `overdue_payment`, or
+   `trial_ending`.
+2. **LLM extractor** (`gpt-4o-mini`, only on candidates) returns strict JSON with
+   vendor / amount / currency / due_date / confidence. Gated on `OPENAI_API_KEY`; if it is
+   missing or fails, Sifter falls back to keyword-only extraction with `confidence: "low"`.
+
+Priority mapping: `overdue_payment` → 3; `new_bill` / `trial_ending` → 1 (>7d), 2 (<=7d),
+3 (<=2d) based on the due/end date. Confirmed items are escalated via `priority_inbox`.
+
+### Lead skills
+
+- **`cto_radar`** — Tavily-backed search for fractional / interim / part-time CTO roles that
+  are remote-US or Jacksonville-FL hybrid/remote, with location-aware scoring. Returns
+  `{"opportunities": [...]}` (top 10).
+- **`icp_prospector`** — seed-list-driven company prospector. Reads `data/icp_seed.csv`.
+
+**ICP seed-list contract** (`data/icp_seed.csv`):
+
+```
+company_name,website,industry,employee_count,funding_stage,has_cto,acquired,hiring_signals_url
+```
+
+Hard filters (rows failing any are dropped before enrichment):
+
+- `industry` in `{saas, fintech, edtech, commerce}` (configurable via payload `industries`)
+- `employee_count` within `[employee_min, employee_max]` (default 10-50)
+- `funding_stage` in `{seed, series-a, series-b}` (configurable via `funding_stages`)
+- `has_cto == "yes"` is **dropped** (ICP targets companies that still need a CTO; keep `no`/`unknown`)
+- `acquired == "yes"` is **dropped** (keep `no`/`unknown`)
+
+Survivors with `unknown` cells are enriched via targeted Tavily queries, then ranked by an
+LLM (falls back to a heuristic when `OPENAI_API_KEY` is absent). Returns
+`{"top_companies": [...], "rejected": [...], "seed_rows_scanned": N}`.
+
+### Composition kernel (`skill_context.py`, `mcp_registry.py`)
+
+Skills now receive a `SkillContext` at `task["ctx"]` (built once per `Manager` invocation).
+Existing skills that ignore it are unaffected; composite skills opt in:
+
+```python
+def run(self, task):
+    ctx = task.get("ctx")
+    facts = ctx.run_skill("cto_radar", {})          # compose another skill (max depth 3)
+    vault = ctx.mcp("insight_vault")                 # MCP handle
+    if vault.available():                            # ALWAYS check before depending on it
+        data = vault.request("retrieve_biases", {"theme": "..."})
+    client = ctx.llm()                               # shared OpenAI client (or None)
+    ctx.priority_inbox.emit_priority_action(...)     # escalate without re-importing
+```
+
+**MCP is optional and additive.** `MCPHandle.available()` is health-checked with a 60s TTL
+cache; unreachable servers return `False` (and are logged to `notification_log` with
+`notification_type='mcp_unavailable'`). Composite skills must degrade gracefully when a
+server is down — never block on it.
+
+**Declaring dependencies.** Populate `skill_configurations.dependencies_json` with a typed
+list. `enaam_skill_loader.py` validates them at load time:
+
+```json
+[
+  {"type": "env", "key": "OPENAI_API_KEY", "required": true},
+  {"type": "mcp", "alias": "insight_vault", "required": false},
+  {"type": "skill", "name": "cto_radar", "required": false}
+]
+```
+
+Missing **required** deps set `skill.degraded = True`; the skill's `run()` should
+short-circuit with a structured `{"status": "degraded", ...}` rather than crash. Missing
+**optional** deps are logged and the skill chooses its fallback.
+
+### Blogger (composite skill example)
+
+`blogger` demonstrates the pattern: the LLM generates the post, and InsightVault *tempers*
+it with the user's stored biases/opinions (`retrieve_biases`). The `tempering` knob accepts
+`vault_preferred` (default), `vault_required`, or `vault_off`. Each draft is flagged
+`bias_tempering` = `tempered` / `lightly_tempered` / `untempered`; untempered drafts are
+prefixed `[UNTEMPERED]` in the review queue. `mode="draft"` (default) writes a priority-1
+`linkedin_post_draft` pending action; `mode="publish"` requires the
+`KHURSHEED_BLOGGER_PUBLISH_ENABLED` kill switch plus LinkedIn credentials, and demotes to a
+draft on any failure.
+
+---
+
+*Last updated: 2026-10-06*
 *Enaam Platform Version: 1.0*

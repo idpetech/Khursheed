@@ -30,6 +30,32 @@
       "payload": {
         "max_messages": 100
       }
+    },
+    {
+      "id": "task-cto-radar",
+      "skills": ["cto_radar"],
+      "interval_days": 2,
+      "payload": {}
+    },
+    {
+      "id": "task-icp-prospector",
+      "skills": ["icp_prospector"],
+      "interval_days": 7,
+      "payload": {
+        "top_n": 5
+      }
+    },
+    {
+      "id": "task-blogger-weekly",
+      "skills": ["blogger"],
+      "interval_days": 7,
+      "payload": {
+        "mode": "draft",
+        "theme": "fractional CTO + AI engineering hiring",
+        "tone": "executive, plainspoken, mildly contrarian",
+        "length": "medium",
+        "tempering": "vault_preferred"
+      }
     }
   ]
 }
