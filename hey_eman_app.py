@@ -53,8 +53,16 @@ def _inject_base_css() -> None:
             transition: border-color .15s ease, color .15s ease, background-color .15s ease;
         }
         .enaam-chip { transition: border-color .15s ease, color .15s ease; }
-        /* Tabs: roomier and horizontally scrollable on narrow screens */
-        .stTabs [data-baseweb="tab-list"] { gap: 0.25rem; overflow-x: auto; }
+        /* Tabs: roomier, horizontally scrollable, and pinned while scrolling */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 0.25rem;
+            overflow-x: auto;
+            position: sticky;
+            top: 3.5rem;            /* clear the fixed Streamlit header */
+            z-index: 100;
+            background-color: #f6f3ec;
+            border-bottom: 1px solid rgba(0,0,0,0.06);
+        }
         .stTabs [data-baseweb="tab"] { padding: 0.5rem 0.9rem; }
         /* Status chips */
         .enaam-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.25rem 0 1rem; }
@@ -81,6 +89,7 @@ def _inject_base_css() -> None:
                 padding-top: 1rem;
             }
             h1 { font-size: 1.6rem !important; }
+            .stTabs [data-baseweb="tab-list"] { top: 2.75rem; }
         }
         </style>
         """,
