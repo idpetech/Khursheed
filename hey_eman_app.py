@@ -54,6 +54,23 @@ def _inject_base_css() -> None:
         /* Tabs: roomier and horizontally scrollable on narrow screens */
         .stTabs [data-baseweb="tab-list"] { gap: 0.25rem; overflow-x: auto; }
         .stTabs [data-baseweb="tab"] { padding: 0.5rem 0.9rem; }
+        /* Status chips */
+        .enaam-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.25rem 0 1rem; }
+        .enaam-chip {
+            font-size: 0.8rem;
+            padding: 0.22rem 0.65rem;
+            border-radius: 999px;
+            border: 1px solid rgba(0,0,0,0.12);
+            color: #44403c;
+            background: transparent;
+            white-space: nowrap;
+        }
+        .enaam-chip.accent { border-color: #1f4b3a; color: #1f4b3a; font-weight: 600; }
+        /* Cards: give expanders a flat, structured container */
+        [data-testid="stExpander"] details {
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 12px;
+        }
         /* Mobile */
         @media (max-width: 640px) {
             .block-container {
@@ -67,6 +84,27 @@ def _inject_base_css() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _chip(label: str, accent: bool = False) -> str:
+    cls = "enaam-chip accent" if accent else "enaam-chip"
+    return f'<span class="{cls}">{label}</span>'
+
+
+def _render_chips(manager: Manager) -> None:
+    db_path = str(manager._db_path)
+    decisions = len(list_open_priority_actions(min_priority=2, db_path=db_path))
+    review = len(list_open_priority_actions(min_priority=0, db_path=db_path))
+    followups = len(list_open_loops(db_path=db_path, limit=50))
+    brief_ready = bool(st.session_state.get("brief"))
+
+    chips = [
+        _chip(f"{decisions} need you", accent=decisions > 0),
+        _chip(f"{review} to review", accent=review > 0),
+        _chip(f"{followups} follow-ups"),
+        _chip("brief ready" if brief_ready else "no brief yet", accent=brief_ready),
+    ]
+    st.markdown('<div class="enaam-chips">' + "".join(chips) + "</div>", unsafe_allow_html=True)
 
 
 def _greeting() -> str:
@@ -175,6 +213,9 @@ def _render_decisions(manager: Manager) -> None:
     db_path = str(manager._db_path)
     alerts = list_open_priority_actions(min_priority=2, db_path=db_path)
     st.subheader("Needs a decision")
+    if not alerts:
+        st.caption("Inbox is clear — nothing needs a decision right now.")
+        return
     st.markdown(_format_priority_alerts(alerts))
 
 
@@ -182,6 +223,9 @@ def _render_followups(manager: Manager) -> None:
     db_path = str(manager._db_path)
     loops = list_open_loops(db_path=db_path, limit=8)
     st.subheader("Follow-ups")
+    if not loops:
+        st.caption("No open follow-ups.")
+        return
     st.markdown(_format_open_loops(loops))
 
 
@@ -438,15 +482,16 @@ def _render_header(manager: Manager, demo: bool) -> None:
 
     st.title(_greeting())
     st.caption(today)
+    _render_chips(manager)
 
     c1, c2, c3 = st.columns(3)
-    if c1.button("Run morning brief", use_container_width=True, type="primary"):
+    if c1.button("Run morning brief", use_container_width=True, type="primary", icon=":material/bolt:"):
         _run_morning(manager)
-    if c2.button("Refresh brief", use_container_width=True):
+    if c2.button("Refresh brief", use_container_width=True, icon=":material/refresh:"):
         notifier = MarkdownFileNotifier(str(PROJECT_ROOT / "executive_summary.md"))
         st.session_state.brief = generate_executive_summary(manager, notifier)
         st.toast("Brief refreshed")
-    if c3.button("Check mail now", use_container_width=True):
+    if c3.button("Check mail now", use_container_width=True, icon=":material/mail:"):
         with st.spinner("Checking the three mailboxes."):
             _run_skill_now(manager, "sifter", {"max_messages": 100})
         st.toast("Mail check finished")
@@ -462,6 +507,14 @@ def main() -> None:
     _require_password()
 
     _inject_base_css()
+
+    logo_path = PROJECT_ROOT / "assets" / "enaam_logo.svg"
+    if logo_path.exists():
+        try:
+            st.logo(str(logo_path), size="large")
+        except Exception:
+            pass
+
     prepare_runtime()
     manager = Manager()
     register_default_skills(manager)
