@@ -39,6 +39,37 @@ def load_recent_turns(
     return [{"user_content": row[0], "assistant_content": row[1]} for row in rows]
 
 
+def load_turns(
+    session_id: str,
+    db_path: str | Path = "khursheed.db",
+    limit: int = 200,
+) -> list[dict[str, str]]:
+    """Return up to `limit` turns (oldest first), including created_at."""
+    resolved = resolve_db_path(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT user_content, assistant_content, created_at
+            FROM chat_turns
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (session_id, limit),
+        )
+        rows = cursor.fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    rows.reverse()
+    return [
+        {"user_content": row[0], "assistant_content": row[1], "created_at": row[2]}
+        for row in rows
+    ]
+
+
 def record_turn(
     session_id: str,
     user_content: str,

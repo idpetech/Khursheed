@@ -12,7 +12,7 @@ import streamlit as st
 
 import blog_themes
 from action_executor import approve_and_execute
-from chat_memory import load_recent_turns
+from chat_memory import load_turns
 from chat_memory import record_turn
 from executive_summary import _format_open_loops
 from executive_summary import _format_priority_alerts
@@ -419,21 +419,58 @@ SUGGESTED_PROMPTS = [
 ]
 
 
+def _turn_local_date(created_at: str | None):
+    """Convert a stored (UTC) timestamp to a local calendar date."""
+    if not created_at:
+        return None
+    try:
+        dt = datetime.fromisoformat(created_at)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone().date()
+
+
+def _render_turn(turn: dict) -> None:
+    with st.chat_message("user"):
+        st.markdown(turn["user_content"])
+    with st.chat_message("assistant"):
+        st.markdown(turn["assistant_content"])
+
+
 def _render_conversation(manager: Manager, agent: HeyEmanAgent) -> None:
-    turns = load_recent_turns(SESSION_ID, db_path=str(manager._db_path), limit=12)
-    if not turns:
-        st.caption("New here? Try one of these to get started, or type in the bar below.")
-        cols = st.columns(len(SUGGESTED_PROMPTS))
-        for i, prompt in enumerate(SUGGESTED_PROMPTS):
-            if cols[i].button(prompt, key=f"suggest-{i}", use_container_width=True):
-                with st.spinner("Working"):
-                    _answer(prompt, manager, agent)
-                st.rerun()
-    for turn in turns:
-        with st.chat_message("user"):
-            st.markdown(turn["user_content"])
-        with st.chat_message("assistant"):
-            st.markdown(turn["assistant_content"])
+    turns = load_turns(SESSION_ID, db_path=str(manager._db_path), limit=200)
+    today = datetime.now().astimezone().date()
+    today_turns = [t for t in turns if _turn_local_date(t.get("created_at")) == today]
+    older_turns = [t for t in turns if _turn_local_date(t.get("created_at")) != today]
+
+    # Today's conversation lives in a fixed-height, scrollable chat window.
+    chat_box = st.container(height=460, border=True)
+    with chat_box:
+        if not today_turns:
+            st.caption("No messages yet today. Ask below, or try one of these:")
+            cols = st.columns(len(SUGGESTED_PROMPTS))
+            for i, prompt in enumerate(SUGGESTED_PROMPTS):
+                if cols[i].button(prompt, key=f"suggest-{i}", use_container_width=True):
+                    with st.spinner("Working"):
+                        _answer(prompt, manager, agent)
+                    st.rerun()
+        for turn in today_turns:
+            _render_turn(turn)
+
+    # Everything before today is tucked into a collapsed history, grouped by day.
+    if older_turns:
+        with st.expander(f"Chat history · {len(older_turns)} earlier messages"):
+            history_box = st.container(height=360, border=False)
+            with history_box:
+                last_date = None
+                for turn in older_turns:
+                    day = _turn_local_date(turn.get("created_at"))
+                    if day and day != last_date:
+                        st.caption(day.strftime("%A, %b %d"))
+                        last_date = day
+                    _render_turn(turn)
 
 
 # ---------------------------------------------------------------------------
