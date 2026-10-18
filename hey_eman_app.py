@@ -45,12 +45,14 @@ def _inject_base_css() -> None:
             padding-top: 2rem;
             padding-bottom: 6rem; /* room for the pinned chat bar */
         }
-        /* Finger-friendly buttons */
+        /* Finger-friendly buttons with a subtle hover */
         .stButton > button, .stFormSubmitButton > button {
             border-radius: 10px;
             padding: 0.55rem 1rem;
             font-weight: 600;
+            transition: border-color .15s ease, color .15s ease, background-color .15s ease;
         }
+        .enaam-chip { transition: border-color .15s ease, color .15s ease; }
         /* Tabs: roomier and horizontally scrollable on narrow screens */
         .stTabs [data-baseweb="tab-list"] { gap: 0.25rem; overflow-x: auto; }
         .stTabs [data-baseweb="tab"] { padding: 0.5rem 0.9rem; }
@@ -286,6 +288,11 @@ def _render_blog_draft(action: dict) -> None:
     theme = payload.get("theme", "—")
     word_count = payload.get("word_count", "—")
     st.caption(f"Theme: {theme} · Voice: {tempering} · ~{word_count} words")
+    if tempering == "untempered":
+        st.warning(
+            "Generated without your InsightVault voice. Review tone before publishing.",
+            icon=":material/warning:",
+        )
 
     body = payload.get("body_markdown") or payload.get("body") or ""
     if body:
@@ -405,10 +412,23 @@ def _answer(query: str, manager: Manager, agent: HeyEmanAgent) -> str:
     return answer
 
 
+SUGGESTED_PROMPTS = [
+    "What's urgent?",
+    "Give me the daily brief",
+    "Draft a LinkedIn post about fractional CTOs",
+]
+
+
 def _render_conversation(manager: Manager, agent: HeyEmanAgent) -> None:
     turns = load_recent_turns(SESSION_ID, db_path=str(manager._db_path), limit=12)
     if not turns:
-        st.caption("Ask what's urgent, or ask for the daily brief. Type in the bar below.")
+        st.caption("New here? Try one of these to get started, or type in the bar below.")
+        cols = st.columns(len(SUGGESTED_PROMPTS))
+        for i, prompt in enumerate(SUGGESTED_PROMPTS):
+            if cols[i].button(prompt, key=f"suggest-{i}", use_container_width=True):
+                with st.spinner("Working"):
+                    _answer(prompt, manager, agent)
+                st.rerun()
     for turn in turns:
         with st.chat_message("user"):
             st.markdown(turn["user_content"])
