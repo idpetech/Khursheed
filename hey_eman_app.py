@@ -39,11 +39,35 @@ def _inject_base_css() -> None:
     st.markdown(
         """
         <style>
-        /* Constrain content width for readable line lengths */
+        /* App shell: the page itself does not scroll — only the active tab's
+           content pane does, so the header and tabs stay visible everywhere. */
         .block-container {
             max-width: 1040px;
             padding-top: 2rem;
-            padding-bottom: 6rem; /* room for the pinned chat bar */
+            padding-bottom: 0.5rem;
+            height: calc(100vh - 9rem); /* clear the top header bar + bottom chat bar */
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {
+            flex: 1 1 auto;
+            min-height: 0;
+        }
+        /* The tabs element grows to fill the leftover vertical space ... */
+        [data-testid="stTabs"] {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        /* ... and so does the baseweb wrapper inside it, so the panel can scroll */
+        [data-testid="stTabs"] > div {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
         /* Finger-friendly buttons with a subtle hover */
         .stButton > button, .stFormSubmitButton > button {
@@ -53,17 +77,22 @@ def _inject_base_css() -> None:
             transition: border-color .15s ease, color .15s ease, background-color .15s ease;
         }
         .enaam-chip { transition: border-color .15s ease, color .15s ease; }
-        /* Tabs: roomier, horizontally scrollable, and pinned while scrolling */
+        /* Tabs: roomier, horizontally scrollable; the pane below them scrolls */
         .stTabs [data-baseweb="tab-list"] {
             gap: 0.25rem;
             overflow-x: auto;
-            position: sticky;
-            top: 3.5rem;            /* clear the fixed Streamlit header */
-            z-index: 100;
+            flex: 0 0 auto;
             background-color: #f6f3ec;
             border-bottom: 1px solid rgba(0,0,0,0.06);
         }
         .stTabs [data-baseweb="tab"] { padding: 0.5rem 0.9rem; }
+        /* Each tab's content is the single scrollable pane */
+        .stTabs [data-baseweb="tab-panel"] {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow-y: auto;
+            padding-right: 0.5rem;
+        }
         /* Status chips */
         .enaam-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.25rem 0 1rem; }
         .enaam-chip {
@@ -454,32 +483,29 @@ def _render_conversation(manager: Manager, agent: HeyEmanAgent) -> None:
     today_turns = [t for t in turns if _turn_local_date(t.get("created_at")) == today]
     older_turns = [t for t in turns if _turn_local_date(t.get("created_at")) != today]
 
-    # Today's conversation lives in a fixed-height, scrollable chat window.
-    chat_box = st.container(height=460, border=True)
-    with chat_box:
-        if not today_turns:
-            st.caption("No messages yet today. Ask below, or try one of these:")
-            cols = st.columns(len(SUGGESTED_PROMPTS))
-            for i, prompt in enumerate(SUGGESTED_PROMPTS):
-                if cols[i].button(prompt, key=f"suggest-{i}", use_container_width=True):
-                    with st.spinner("Working"):
-                        _answer(prompt, manager, agent)
-                    st.rerun()
-        for turn in today_turns:
-            _render_turn(turn)
+    # Today's conversation. The tab panel itself is the scroll region, so the
+    # header and tabs stay fixed while only this content scrolls.
+    if not today_turns:
+        st.caption("No messages yet today. Ask below, or try one of these:")
+        cols = st.columns(len(SUGGESTED_PROMPTS))
+        for i, prompt in enumerate(SUGGESTED_PROMPTS):
+            if cols[i].button(prompt, key=f"suggest-{i}", use_container_width=True):
+                with st.spinner("Working"):
+                    _answer(prompt, manager, agent)
+                st.rerun()
+    for turn in today_turns:
+        _render_turn(turn)
 
     # Everything before today is tucked into a collapsed history, grouped by day.
     if older_turns:
         with st.expander(f"Chat history · {len(older_turns)} earlier messages"):
-            history_box = st.container(height=360, border=False)
-            with history_box:
-                last_date = None
-                for turn in older_turns:
-                    day = _turn_local_date(turn.get("created_at"))
-                    if day and day != last_date:
-                        st.caption(day.strftime("%A, %b %d"))
-                        last_date = day
-                    _render_turn(turn)
+            last_date = None
+            for turn in older_turns:
+                day = _turn_local_date(turn.get("created_at"))
+                if day and day != last_date:
+                    st.caption(day.strftime("%A, %b %d"))
+                    last_date = day
+                _render_turn(turn)
 
 
 # ---------------------------------------------------------------------------
