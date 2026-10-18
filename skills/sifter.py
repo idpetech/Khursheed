@@ -135,9 +135,14 @@ class SifterSkill(Skill):
         return "\n".join(bodies).strip()
 
     def _categorize(self, subject: str, sender: str, body: str) -> str:
-        text = f"{subject} {sender} {body}".lower()
-        if any(keyword in text for keyword in ["invoice", "payment", "overdue", "bill", "receipt"]):
+        header = f"{subject} {sender}".lower()
+        promo = ("% off", "discount", "coupon", "promo", "flash sale", "save up to", "ships free")
+        bills = ("invoice", "past due", "amount due", "payment due", "overdue", "receipt", "statement")
+        if any(marker in header for marker in promo):
+            return "General"
+        if any(keyword in header for keyword in bills):
             return "Urgent/Bill"
+        text = f"{header} {body}".lower()
         if any(keyword in text for keyword in ["demo", "quote", "proposal", "interest", "pricing"]):
             return "Potential Lead"
         return "General"
@@ -255,7 +260,7 @@ class SifterSkill(Skill):
             # Stage 2: OpenAI extraction (expensive, only for candidates)
             extraction = self._extract_financial_details(subject, sender, body, financial_kind)
             
-            if extraction.get("kind") == "none":
+            if extraction.get("kind") in (None, "none") or extraction.get("confidence") == "low":
                 return None
 
             # Priority and expiry calculation

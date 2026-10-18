@@ -302,7 +302,11 @@ def _extract_pending_bills(runs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         payload = json.loads(run["result_json"])
         for account in payload.get("accounts", []):
             for entry in account.get("categorized", []):
-                if entry.get("category") == "Urgent/Bill":
+                subject = entry.get("subject", "")
+                bill_words = ("invoice", "past due", "amount due", "payment due", "overdue", "receipt", "statement")
+                if entry.get("category") == "Urgent/Bill" and any(
+                    word in subject.lower() for word in bill_words
+                ):
                     pending.append(
                         {
                             "subject": entry.get("subject", ""),

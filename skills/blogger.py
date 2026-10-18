@@ -30,17 +30,52 @@ class BloggerSkill(Skill):
             payload = task.get("payload", {})
             ctx = task.get("ctx")
             
-            # Extract configuration
-            theme = payload.get("theme")
-            if not theme:
-                return {"status": "error", "reason": "theme is required"}
-            
+            # Extract configuration. Accept common aliases so a slightly
+            # different payload shape still produces a draft instead of erroring.
+            theme = (
+                payload.get("theme")
+                or payload.get("topic")
+                or payload.get("subject")
+                or payload.get("about")
+            )
+            if isinstance(theme, str):
+                theme = theme.strip()
+
             tone = payload.get("tone", "executive, plainspoken, mildly contrarian")
             length = payload.get("length", "medium")
             sources = payload.get("sources", ["skill:cto_radar"])
             tempering = payload.get("tempering", "vault_preferred")
             cta = payload.get("cta")
             mode = payload.get("mode", "draft")
+
+            # Resolve the theme. Explicit themes win; "auto" (or a missing theme)
+            # triggers automatic selection: first a queued theme from the UI,
+            # then one derived from the factual sources.
+            theme_source = "explicit"
+            if not theme or theme.lower() == "auto":
+                theme, theme_source, auto_context = self._resolve_auto_theme(ctx, sources)
+                if not theme:
+                    return {
+                        "status": "error",
+                        "reason": "theme is required",
+                        "hint": (
+                            "Pass payload.theme (string) e.g. {'theme': 'fractional CTOs'}, "
+                            "queue a theme in the UI, or ensure a source skill "
+                            "(e.g. skill:cto_radar) returns results for theme='auto'."
+                        ),
+                    }
+                # A queued theme may carry its own saved settings; honor them,
+                # falling back to the payload/defaults above when absent.
+                if auto_context:
+                    tone = auto_context.get("tone", tone)
+                    length = auto_context.get("length", length)
+                    sources = auto_context.get("sources", sources)
+                    cta = auto_context.get("cta", cta)
+                    tempering = auto_context.get("tempering", tempering)
+                    mode = auto_context.get("mode", mode)
+                    if mode not in ["draft", "publish"]:
+                        mode = "draft"
+            self._theme_source = theme_source
             
             # Validate mode
             if mode not in ["draft", "publish"]:
@@ -121,6 +156,7 @@ class BloggerSkill(Skill):
                 "action_id": action_id,
                 "draft": draft,
                 "theme": theme,
+                "theme_source": getattr(self, "_theme_source", "explicit"),
                 "bias_tempering": draft.get("bias_tempering", "untempered")
             }
             
@@ -174,6 +210,93 @@ class BloggerSkill(Skill):
         except Exception as e:
             logger.error(f"Publish flow failed: {e}")
             return {"status": "error", "reason": str(e)}
+
+    @staticmethod
+    def _resolve_db_path(ctx) -> str:
+        """Best-effort lookup of the active SQLite path from the context."""
+        for attr_chain in (("db_path",), ("_manager", "_db_path")):
+            obj = ctx
+            try:
+                for attr in attr_chain:
+                    obj = getattr(obj, attr)
+                if obj:
+                    return str(obj)
+            except AttributeError:
+                continue
+        return "khursheed.db"
+
+    def _resolve_auto_theme(
+        self, ctx, sources: List[str]
+    ) -> tuple[Optional[str], str, Optional[Dict[str, Any]]]:
+        """Pick a theme automatically.
+
+        Precedence:
+        1. The oldest pending theme queued by the user in the UI.
+        2. A theme derived from the factual sources (e.g. top cto_radar hit).
+
+        Returns (theme, theme_source, context). theme is None if nothing found.
+        context carries any saved per-theme settings from the queue.
+        """
+        # 1) User-queued themes take priority.
+        try:
+            import blog_themes
+
+            db_path = self._resolve_db_path(ctx)
+            queued = blog_themes.next_pending_theme(db_path=db_path)
+            if queued and queued.get("theme"):
+                blog_themes.mark_used(queued["theme_id"], db_path=db_path)
+                logger.info(f"Auto theme from queue: {queued['theme']}")
+                return queued["theme"], "queued", queued.get("context")
+        except Exception as e:
+            logger.warning(f"Theme queue lookup failed: {e}")
+
+        # 2) Derive from the factual sources.
+        derived = self._derive_theme_from_sources(ctx, sources)
+        if derived:
+            return derived, "auto_sources", None
+
+        return None, "auto_failed", None
+
+    def _derive_theme_from_sources(self, ctx, sources: List[str]) -> Optional[str]:
+        """Build a theme string from the first meaningful item a source returns."""
+        if not ctx:
+            return None
+        for source in sources:
+            if not source.startswith("skill:"):
+                continue
+            skill_name = source[6:]
+            try:
+                result = ctx.run_skill(skill_name, {})
+            except Exception as e:
+                logger.warning(f"Auto-theme source '{skill_name}' failed: {e}")
+                continue
+
+            headline = self._first_headline(result)
+            if headline:
+                logger.info(f"Derived theme from {skill_name}: {headline}")
+                return headline
+        return None
+
+    @staticmethod
+    def _first_headline(result: Any) -> Optional[str]:
+        """Find a human-readable headline in a skill result dict."""
+        if not isinstance(result, dict):
+            return None
+        # Known list-bearing keys across our skills, in priority order.
+        list_keys = ["opportunities", "top_companies", "companies", "leads", "items"]
+        item_keys = ["title", "company_name", "name", "headline", "role"]
+        for lk in list_keys:
+            items = result.get(lk)
+            if isinstance(items, list) and items:
+                first = items[0]
+                if isinstance(first, dict):
+                    for ik in item_keys:
+                        val = first.get(ik)
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+                elif isinstance(first, str) and first.strip():
+                    return first.strip()
+        return None
 
     def _is_insight_vault_available(self, ctx) -> bool:
         """Check if InsightVault MCP service is available"""

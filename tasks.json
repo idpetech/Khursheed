@@ -1,18 +1,6 @@
 {
   "tasks": [
     {
-      "id": "task-001",
-      "skills": ["echo", "timestamp"],
-      "payload": {
-        "message": "Hello from Khursheed."
-      }
-    },
-    {
-      "id": "task-002",
-      "skills": ["timestamp"],
-      "payload": {}
-    },
-    {
       "id": "task-003",
       "skills": ["lead_scout"],
       "interval_days": 3,
@@ -38,20 +26,12 @@
       "payload": {}
     },
     {
-      "id": "task-icp-prospector",
-      "skills": ["icp_prospector"],
-      "interval_days": 7,
-      "payload": {
-        "top_n": 5
-      }
-    },
-    {
       "id": "task-blogger-weekly",
       "skills": ["blogger"],
       "interval_days": 7,
       "payload": {
         "mode": "draft",
-        "theme": "fractional CTO + AI engineering hiring",
+        "theme": "auto",
         "tone": "executive, plainspoken, mildly contrarian",
         "length": "medium",
         "tempering": "vault_preferred"

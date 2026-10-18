@@ -15,6 +15,14 @@ class SifterSkillTests(unittest.TestCase):
         )
         self.assertEqual(category, "Urgent/Bill")
 
+    def test_sale_mail_is_not_a_bill(self):
+        category = self.skill._categorize(
+            subject="Score up to 60% off select mattresses",
+            sender="Mattress Firm <MattressFirm@email.mattressfirm.com>",
+            body="Your payment options are inside.",
+        )
+        self.assertEqual(category, "General")
+
     def test_categorize_leads(self):
         category = self.skill._categorize(
             subject="Request for proposal",

@@ -187,6 +187,19 @@ class TestSifterFinancialDetection(unittest.TestCase):
         
         self.assertIsNone(result)
 
+    @patch("priority_inbox.emit_priority_action")
+    def test_low_confidence_does_not_escalate(self, mock_emit):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            result = self.skill._detect_financial_urgency(
+                "Payment overdue",
+                "billing@service.com",
+                "Past due notice",
+                "MSG-low",
+                "yahoo",
+            )
+        self.assertIsNone(result)
+        mock_emit.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

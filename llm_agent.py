@@ -35,13 +35,7 @@ class HeyEmanAgent:
             messages.append({"role": "assistant", "content": turn["assistant_content"]})
         messages.append({"role": "user", "content": query})
         try:
-            response = self._openai().chat.completions.create(
-                model=self._model,
-                messages=messages,
-                functions=[tool["function"] for tool in self._tool_definitions()],
-                function_call="auto",
-            )
-            output_text = self._handle_function_calls(response, messages)
+            output_text = self._run_tool_loop(messages)
         except APIConnectionError:
             output_text = (
                 "OpenAI connection error. Please check network access and try again. "
@@ -63,12 +57,17 @@ class HeyEmanAgent:
             "Use run_skill to run one of those skills. "
             "Use 'sifter' for email, 'cto_radar' for fractional CTO opportunities, "
             "'icp_prospector' for target companies, 'lead_scout' for general lead generation, "
-            "and 'blogger' with mode='draft' for a LinkedIn draft. "
-            "Use mode='publish' only when the user explicitly says publish.\n"
+            "and 'blogger' for a LinkedIn draft. The blogger payload REQUIRES a "
+            "'theme' string; derive it from the user's request and always include it, "
+            'e.g. payload {"mode": "draft", "theme": "fractional CTOs"}. '
+            "Use mode='publish' only when the user explicitly says publish. "
+            'For scout, pass payload {"query": "the search"}.\n'
             "When the user asks what is urgent, call list_priority_actions first. "
             "When the user wants a summary, call executive_summary. "
-            "When you report a priority alert, keep From, Subject, Mailbox, Sent, and Recorded. "
-            "If a line says not recorded, say that it was not recorded. "
+            "When you report priority alerts, reproduce the tool result's 'formatted' field "
+            "verbatim. Do not rewrite titles, reformat amounts or dates, or invent values. "
+            "It already includes From, Subject, Mailbox, Sent, and Recorded; if a line says "
+            "'not recorded', keep it exactly as 'not recorded'. "
             "Always use the appropriate tool and summarize the result clearly."
         )
         return base + principal_prompt_block(self._profile_path)
@@ -123,54 +122,83 @@ class HeyEmanAgent:
             },
         ]
 
-    def _handle_function_calls(self, response, messages: list[dict[str, Any]]) -> str:
-        message = response.choices[0].message
-        function_call = message.function_call
+    def _run_tool_loop(self, messages: list[dict[str, Any]], max_steps: int = 4) -> str:
+        """Drive a bounded multi-step tool-calling conversation.
 
-        if not function_call:
-            return message.content or "No response available."
+        The model may call tools several times (e.g. retry a skill after an
+        error) before producing a final answer. We cap the number of tool
+        steps to stay simple and avoid runaway loops.
+        """
+        functions = [tool["function"] for tool in self._tool_definitions()]
+        tool_used = False
+        for _ in range(max_steps):
+            response = self._openai().chat.completions.create(
+                model=self._model,
+                messages=messages,
+                functions=functions,
+                function_call="auto",
+            )
+            message = response.choices[0].message
+            function_call = message.function_call
 
-        name = function_call.name
-        args = json.loads(function_call.arguments or "{}")
+            if not function_call:
+                default = "Task completed." if tool_used else "No response available."
+                return message.content or default
 
-        if name == "run_skill":
-            skill_name = args.get("skill_name")
-            payload = args.get("payload", {})
-            result = self._run_skill(skill_name, payload)
-        elif name == "list_skills":
-            result = {"skills": self._manager.list_skill_names()}
-        elif name == "executive_summary":
-            result = {"summary": self._generate_summary()}
-        elif name == "list_priority_actions":
-            result = self._list_priority_actions()
-        else:
-            result = {"error": f"Unknown function '{name}'."}
+            tool_used = True
+            name = function_call.name
+            args = json.loads(function_call.arguments or "{}")
+            result = self._dispatch_function(name, args)
 
-        messages.append({
-            "role": "assistant",
-            "content": None,
-            "function_call": {"name": name, "arguments": function_call.arguments},
-        })
-        messages.append({
-            "role": "function",
-            "name": name,
-            "content": json.dumps(result),
-        })
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "function_call": {"name": name, "arguments": function_call.arguments},
+            })
+            messages.append({
+                "role": "function",
+                "name": name,
+                "content": json.dumps(result),
+            })
 
+        # Budget exhausted: ask for a final answer without more tool calls.
         follow_up = self._openai().chat.completions.create(
             model=self._model,
             messages=messages,
         )
         return follow_up.choices[0].message.content or "Task completed."
 
+    def _dispatch_function(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name == "run_skill":
+            skill_name = args.get("skill_name")
+            payload = args.get("payload", {})
+            return self._run_skill(skill_name, payload)
+        if name == "list_skills":
+            return {"skills": self._manager.list_skill_names()}
+        if name == "executive_summary":
+            return {"summary": self._generate_summary()}
+        if name == "list_priority_actions":
+            return self._list_priority_actions()
+        return {"error": f"Unknown function '{name}'."}
+
     def _run_skill(self, skill_name: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not skill_name:
             return {"error": "skill_name is required"}
         task_id = f"llm-{skill_name}-{datetime.now(UTC).isoformat()}"
-        return self._manager.run_skill(skill_name, task_id, payload)
+        try:
+            return self._manager.run_skill(skill_name, task_id, payload)
+        except (KeyError, ValueError, RuntimeError, OSError) as exc:
+            return {"error": str(exc)}
 
     def _generate_summary(self) -> str:
         return generate_executive_summary(self._manager, MarkdownFileNotifier())
 
     def _list_priority_actions(self) -> dict[str, Any]:
-        return priority_inbox.list_priority_actions(db_path=str(self._db_path))
+        from executive_summary import _format_priority_alerts
+
+        data = priority_inbox.list_priority_actions(db_path=str(self._db_path))
+        actions = data.get("actions", []) if isinstance(data, dict) else []
+        # Provide a ready-made, detail-preserving rendering so the model does not
+        # drop From/Subject/Mailbox/Sent/Recorded or invent fields.
+        data["formatted"] = _format_priority_alerts(actions)
+        return data
