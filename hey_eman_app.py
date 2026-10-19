@@ -93,6 +93,14 @@ def _inject_base_css() -> None:
             overflow-y: auto;
             padding-right: 0.5rem;
         }
+        /* The Ask Enaam input is a globally pinned bar, so scope it to the chat
+           (first) tab only: hide it by default, show it when tab 1 is active. */
+        [data-testid="stBottom"] { display: none; }
+        [data-testid="stAppViewContainer"]:has(
+            [data-baseweb="tab-list"] > [data-baseweb="tab"]:first-child[aria-selected="true"]
+        ) [data-testid="stBottom"] {
+            display: block;
+        }
         /* Status chips */
         .enaam-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.25rem 0 1rem; }
         .enaam-chip {
@@ -249,41 +257,30 @@ def _parse_payload(raw) -> dict:
 # Rendering: Today
 # ---------------------------------------------------------------------------
 
-def _render_decisions(manager: Manager) -> None:
+def _render_today(manager: Manager, demo: bool) -> None:
+    """Each section is a collapsible card; urgent decisions open by default."""
     db_path = str(manager._db_path)
     alerts = list_open_priority_actions(min_priority=2, db_path=db_path)
-    st.subheader("Needs a decision")
-    if not alerts:
-        st.caption("Inbox is clear — nothing needs a decision right now.")
-        return
-    st.markdown(_format_priority_alerts(alerts))
-
-
-def _render_followups(manager: Manager) -> None:
-    db_path = str(manager._db_path)
     loops = list_open_loops(db_path=db_path, limit=8)
-    st.subheader("Follow-ups")
-    if not loops:
-        st.caption("No open follow-ups.")
-        return
-    st.markdown(_format_open_loops(loops))
-
-
-def _render_brief() -> None:
-    st.subheader("Daily brief")
     brief = st.session_state.get("brief")
-    if brief:
-        st.markdown(brief)
-    else:
-        st.caption("No brief yet. Use Run morning brief above.")
 
+    with st.expander(f"Needs a decision ({len(alerts)})", expanded=bool(alerts)):
+        if alerts:
+            st.markdown(_format_priority_alerts(alerts))
+        else:
+            st.caption("Inbox is clear — nothing needs a decision right now.")
 
-def _render_today(manager: Manager, demo: bool) -> None:
-    _render_decisions(manager)
-    st.divider()
-    _render_followups(manager)
-    st.divider()
-    _render_brief()
+    with st.expander(f"Follow-ups ({len(loops)})", expanded=False):
+        if loops:
+            st.markdown(_format_open_loops(loops))
+        else:
+            st.caption("No open follow-ups.")
+
+    with st.expander("Daily brief", expanded=False):
+        if brief:
+            st.markdown(brief)
+        else:
+            st.caption("No brief yet. Use Run morning brief above.")
 
 
 # ---------------------------------------------------------------------------
@@ -292,11 +289,11 @@ def _render_today(manager: Manager, demo: bool) -> None:
 
 def _render_review_queue(manager: Manager) -> None:
     db_path = str(manager._db_path)
-    st.subheader("To review")
     pending = list_open_priority_actions(min_priority=0, db_path=db_path)
     if not pending:
         st.caption("Nothing is waiting. You're all caught up.")
         return
+    st.caption(f"{len(pending)} waiting — expand an item to review it.")
     for action in pending:
         label = action.get("title") or "(untitled)"
         action_type = action.get("action_type") or ""
@@ -365,35 +362,39 @@ BLOG_MODE_OPTIONS = ["draft", "publish"]
 
 def _render_theme_queue(manager: Manager) -> None:
     db_path = str(manager._db_path)
-    st.subheader("Blog themes")
-    st.caption(
-        "Queue themes for future LinkedIn posts. The weekly draft (and any 'auto' theme) "
-        "pulls the oldest one first."
-    )
 
-    with st.form("queue-theme", clear_on_submit=True):
-        new_theme = st.text_input("Theme *", placeholder="e.g. Why seed startups delay hiring a CTO")
-        tone = st.text_input("Tone", value="executive, plainspoken, mildly contrarian")
-        col_a, col_b = st.columns(2)
-        length = col_a.selectbox("Length", BLOG_LENGTH_OPTIONS, index=1)
-        tempering = col_b.selectbox("Bias tempering", BLOG_TEMPERING_OPTIONS, index=0)
-        col_c, _ = st.columns(2)
-        mode = col_c.selectbox("Mode", BLOG_MODE_OPTIONS, index=0)
-        sources = st.multiselect("Factual sources", BLOG_SOURCE_OPTIONS, default=["skill:cto_radar"])
-        cta = st.text_input("Call to action", placeholder="e.g. DM me to talk fractional CTO")
-        if st.form_submit_button("Queue theme") and new_theme.strip():
-            context = {
-                "tone": tone.strip(),
-                "length": length,
-                "tempering": tempering,
-                "mode": mode,
-                "sources": sources or ["skill:cto_radar"],
-            }
-            if cta.strip():
-                context["cta"] = cta.strip()
-            blog_themes.add_theme(new_theme, context=context, db_path=db_path)
-            st.toast("Theme queued")
-            st.rerun()
+    with st.expander("Add a theme", expanded=False):
+        st.caption(
+            "Queue themes for future LinkedIn posts. The weekly draft (and any 'auto' "
+            "theme) pulls the oldest one first."
+        )
+        with st.form("queue-theme", clear_on_submit=True):
+            new_theme = st.text_input(
+                "Theme *", placeholder="e.g. Why seed startups delay hiring a CTO"
+            )
+            tone = st.text_input("Tone", value="executive, plainspoken, mildly contrarian")
+            col_a, col_b = st.columns(2)
+            length = col_a.selectbox("Length", BLOG_LENGTH_OPTIONS, index=1)
+            tempering = col_b.selectbox("Bias tempering", BLOG_TEMPERING_OPTIONS, index=0)
+            col_c, _ = st.columns(2)
+            mode = col_c.selectbox("Mode", BLOG_MODE_OPTIONS, index=0)
+            sources = st.multiselect(
+                "Factual sources", BLOG_SOURCE_OPTIONS, default=["skill:cto_radar"]
+            )
+            cta = st.text_input("Call to action", placeholder="e.g. DM me to talk fractional CTO")
+            if st.form_submit_button("Queue theme") and new_theme.strip():
+                context = {
+                    "tone": tone.strip(),
+                    "length": length,
+                    "tempering": tempering,
+                    "mode": mode,
+                    "sources": sources or ["skill:cto_radar"],
+                }
+                if cta.strip():
+                    context["cta"] = cta.strip()
+                blog_themes.add_theme(new_theme, context=context, db_path=db_path)
+                st.toast("Theme queued")
+                st.rerun()
 
     pending = blog_themes.list_themes(status="pending", db_path=db_path)
     if not pending:
@@ -429,13 +430,13 @@ def _render_theme_queue(manager: Manager) -> None:
 
 def _render_runs(manager: Manager) -> None:
     rows = _recent_runs(manager)
-    st.subheader("Activity")
-    if not rows:
-        st.caption("No skill runs in the last 7 days.")
-        return
-    for skill_name, task_id, executed_at, status in rows:
-        st.markdown(f"`{skill_name}` · {status} · {executed_at}")
-        st.caption(task_id)
+    with st.expander(f"Recent skill runs ({len(rows)})", expanded=bool(rows)):
+        if not rows:
+            st.caption("No skill runs in the last 7 days.")
+            return
+        for skill_name, task_id, executed_at, status in rows:
+            st.markdown(f"`{skill_name}` · {status} · {executed_at}")
+            st.caption(task_id)
 
 
 # ---------------------------------------------------------------------------
