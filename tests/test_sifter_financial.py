@@ -200,6 +200,28 @@ class TestSifterFinancialDetection(unittest.TestCase):
         self.assertIsNone(result)
         mock_emit.assert_not_called()
 
+    @patch("priority_inbox.emit_priority_action")
+    def test_low_confidence_with_due_date_is_saved(self, mock_emit):
+        mock_emit.return_value = "bill-1"
+        with patch.dict(os.environ, {"OPENAI_API_KEY": ""}, clear=False):
+            result = self.skill._detect_financial_urgency(
+                "Your JEA eBill is Here",
+                "billing@jea.com",
+                "Please pay $1,158.00 by 11/05/2027. Your JEA account.",
+                "MSG-jea",
+                "yahoo2",
+            )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["priority"], 1)
+        mock_emit.assert_called_once()
+        self.assertEqual(mock_emit.call_args.kwargs["payload"]["due_date"], "2027-11-05")
+
+    def test_model_json_accepts_fenced_object(self):
+        parsed = self.skill._parse_model_json(
+            '```json\n{"kind": "new_bill", "due_date": "2026-11-05"}\n```'
+        )
+        self.assertEqual(parsed["kind"], "new_bill")
+
 
 if __name__ == '__main__':
     unittest.main()

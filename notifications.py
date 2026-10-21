@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import os
 import smtplib
 import ssl
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -56,6 +60,64 @@ class EmailNotifier(Notifier):
             server.login(self._sender, self._password)
             server.sendmail(self._sender, self._recipient, msg.as_string())
         return f"Email sent to {self._recipient}"
+
+
+def _whatsapp_param(value: str) -> str:
+    """Template parameters reject newlines, tabs, and empty text."""
+    cleaned = " ".join(str(value).split())
+    if not cleaned:
+        return "—"
+    return cleaned[:1024]
+
+
+def send_whatsapp_template(title: str, detail: str) -> str:
+    """Send a pre-approved utility template. Raises if config or the API call fails."""
+    token = os.getenv("WHATSAPP_ACCESS_TOKEN", "").strip()
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip()
+    recipient = os.getenv("WHATSAPP_TO", "").strip()
+    template = os.getenv("WHATSAPP_TEMPLATE_NAME", "").strip()
+    language = os.getenv("WHATSAPP_TEMPLATE_LANG", "en").strip() or "en"
+    if not all([token, phone_number_id, recipient, template]):
+        raise RuntimeError("WhatsApp configuration incomplete (missing env vars)")
+
+    to_digits = "".join(ch for ch in recipient if ch.isdigit())
+    if not to_digits:
+        raise RuntimeError("WhatsApp recipient has no digits")
+    body = {
+        "messaging_product": "whatsapp",
+        "to": to_digits,
+        "type": "template",
+        "template": {
+            "name": template,
+            "language": {"code": language},
+            "components": [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": _whatsapp_param(title)},
+                        {"type": "text", "text": _whatsapp_param(detail)},
+                    ],
+                }
+            ],
+        },
+    }
+    request = urllib.request.Request(
+        f"https://graph.facebook.com/v21.0/{phone_number_id}/messages",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"WhatsApp API returned HTTP {response.status}")
+    except urllib.error.HTTPError as exc:
+        detail_text = exc.read().decode("utf-8", errors="replace")[:300]
+        raise RuntimeError(f"WhatsApp API returned HTTP {exc.code}: {detail_text}") from exc
+    return f"WhatsApp sent to {to_digits}"
 
 
 class CompositeNotifier(Notifier):

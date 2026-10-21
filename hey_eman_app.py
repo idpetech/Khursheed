@@ -21,7 +21,9 @@ from llm_agent import HeyEmanAgent
 from manager import Manager
 from notifications import MarkdownFileNotifier
 from open_loops import list_open_loops
+from priority_inbox import BILL_KINDS
 from priority_inbox import list_open_priority_actions
+from priority_inbox import refresh_open_bill_priorities
 from runtime import PROJECT_ROOT
 from runtime import prepare_runtime
 from skills_bootstrap import register_default_skills
@@ -257,12 +259,43 @@ def _parse_payload(raw) -> dict:
 # Rendering: Today
 # ---------------------------------------------------------------------------
 
+def _render_bill_question(db_path: str, action: dict, key_prefix: str) -> None:
+    """Ask once per visit whether a stored bill has been paid."""
+    payload = _parse_payload(action.get("payload_json"))
+    due = payload.get("due_date") or "no due date yet"
+    amount = payload.get("amount")
+    currency = payload.get("currency") or ""
+    amount_text = f"{amount} {currency}".strip() if amount not in (None, "") else "amount unknown"
+    st.markdown(f"Have you paid this? **{amount_text}**, due {due}.")
+    paid, later = st.columns(2)
+    if paid.button("Paid", key=f"{key_prefix}-paid-{action.get('action_id')}"):
+        result = approve_and_execute(db_path, action["action_id"], reviewed_by="desk")
+        st.session_state.last_ack = result.get("message") or "Marked paid."
+        st.rerun()
+    if later.button("Not yet", key=f"{key_prefix}-later-{action.get('action_id')}"):
+        st.toast("Still open. I'll check this bill again tomorrow.")
+
+
+def _open_bills(db_path: str) -> list[dict]:
+    pending = list_open_priority_actions(min_priority=0, db_path=db_path)
+    return [action for action in pending if action.get("action_type") in BILL_KINDS]
+
+
 def _render_today(manager: Manager, demo: bool) -> None:
     """Each section is a collapsible card; urgent decisions open by default."""
     db_path = str(manager._db_path)
+    refresh_open_bill_priorities(db_path)
     alerts = list_open_priority_actions(min_priority=2, db_path=db_path)
+    bills = _open_bills(db_path)
     loops = list_open_loops(db_path=db_path, limit=8)
     brief = st.session_state.get("brief")
+
+    with st.expander(f"Bills ({len(bills)})", expanded=bool(bills)):
+        if not bills:
+            st.caption("No open bills.")
+        for bill in bills:
+            st.markdown(f"**{bill.get('title') or 'Bill'}**")
+            _render_bill_question(db_path, bill, "today")
 
     with st.expander(f"Needs a decision ({len(alerts)})", expanded=bool(alerts)):
         if alerts:
@@ -301,6 +334,11 @@ def _render_review_queue(manager: Manager) -> None:
             st.caption(action_type)
             if action_type == "linkedin_post_draft":
                 _render_blog_draft(action)
+            elif action_type in BILL_KINDS:
+                if action.get("description"):
+                    st.markdown(action["description"])
+                _render_bill_question(db_path, action, "review")
+                continue
             elif action.get("description"):
                 st.markdown(action["description"])
             if st.button("Acknowledge", key=f"ack-{action.get('action_id')}"):

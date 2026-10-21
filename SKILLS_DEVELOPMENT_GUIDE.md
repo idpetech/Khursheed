@@ -710,16 +710,19 @@ open_actions = priority_inbox.list_open_priority_actions(min_priority=2)
 
 **Priority levels**
 
-| priority | meaning | email sent? |
-|----------|---------|-------------|
+| priority | meaning | WhatsApp sent? |
+|----------|---------|----------------|
 | 0 | low      | no |
-| 1 | medium   | no |
-| 2 | high     | yes (if `KHURSHEED_PRIORITY_EMAIL_*` configured) |
-| 3 | urgent   | yes (if configured) |
+| 1 | medium   | yes, once, when a bill first arrives |
+| 2 | high     | no extra message (already asked on arrival) |
+| 3 | urgent   | yes, again, when a stored bill first becomes urgent |
 
-Email is sent via `notifications.EmailNotifier` only when `priority >= 2`. Missing
-email env vars cause a logged skip, never an exception. Every send/skip is recorded in
-`notification_log` with `related_action_id`.
+A bill (`new_bill`, `overdue_payment`, `trial_ending`) sends one WhatsApp when it is
+first saved, asking whether it has been paid. Opening the desk or running the mail
+scan re-ranks stored bills from their due date without reading the mailbox again.
+A second WhatsApp is sent only when that bill first reaches priority 3. Missing env
+vars or an API error are logged, never raised. Every attempt is recorded in
+`notification_log` with `related_action_id`. A repeated `source_key` does not send again.
 
 **`source_key` dedup contract**
 
@@ -727,7 +730,7 @@ email env vars cause a logged skip, never an exception. Every send/skip is recor
 `CREATE UNIQUE INDEX ... ON pending_actions(source_key) WHERE source_key IS NOT NULL`.
 
 `emit_priority_action` is idempotent: if a row with the same `source_key` already exists,
-it returns the existing `action_id` without inserting a new row or re-sending email.
+it returns the existing `action_id` without inserting a new row or re-sending WhatsApp.
 Use a stable, content-derived key so re-runs don't create duplicates. Conventions:
 
 - Sifter emails: `sha256(f"{account_name}|{rfc822_message_id}|{kind}")`

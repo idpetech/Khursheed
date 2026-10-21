@@ -1,12 +1,12 @@
 """
-Priority Inbox - Emit and manage priority actions with email notifications
+Priority Inbox - Emit and manage priority actions with WhatsApp alerts
 
-Provides functions for creating priority actions with automatic email notifications
-for high-priority items and deduplication based on source keys.
+Provides functions for creating priority actions with urgent WhatsApp alerts
+and deduplication based on source keys.
 """
 
-import os
 import json
+import re
 import sqlite3
 import uuid
 import logging
@@ -14,11 +14,56 @@ from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
-from notifications import EmailNotifier
+from notifications import send_whatsapp_template
 
 
 # Configure basic logging for this module
 logger = logging.getLogger(__name__)
+
+BILL_KINDS = ("new_bill", "overdue_payment", "trial_ending")
+
+
+def normalize_due_date(value: Any) -> Optional[str]:
+    """Return YYYY-MM-DD, or None when the value is not a date."""
+    if value in (None, "", "Unknown", "null", "None"):
+        return None
+    text = str(value).strip()
+    iso = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", text[:10])
+    if iso and text[:10] == iso.group(0):
+        return iso.group(0)
+    us = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", text)
+    if us:
+        month, day, year = (int(part) for part in us.groups())
+        return f"{year:04d}-{month:02d}-{day:02d}"
+    return None
+
+
+def priority_for_bill(
+    kind: str,
+    due_date: Any = None,
+    now: datetime | None = None,
+) -> tuple[int, Optional[str]]:
+    """Priority from a stored due date. No mailbox or model call."""
+    if kind == "overdue_payment":
+        return 3, None
+    normalized = normalize_due_date(due_date)
+    if normalized:
+        try:
+            due_dt = datetime.fromisoformat(normalized + "T23:59:59")
+            current = now or datetime.now()
+            if current.tzinfo is not None:
+                current = current.astimezone().replace(tzinfo=None)
+            days_until = (due_dt - current).days
+            if days_until <= 2:
+                priority = 3
+            elif days_until <= 7:
+                priority = 2
+            else:
+                priority = 1
+            return priority, due_dt.isoformat()
+        except ValueError:
+            pass
+    return 1, None
 
 
 def emit_priority_action(
@@ -32,7 +77,7 @@ def emit_priority_action(
     db_path: str = "khursheed.db"
 ) -> str:
     """
-    Emit a priority action into the pending_actions table with email notifications.
+    Emit a priority action into the pending_actions table.
     
     Args:
         kind: Action type (e.g., 'email', 'notification', 'file_write')
@@ -49,7 +94,7 @@ def emit_priority_action(
         
     Note:
         - If source_key already exists, returns existing action_id without inserting
-        - For priority >= 2, sends email notification (if configured)
+        - For priority >= 3, sends a WhatsApp template (if configured)
         - Never raises on notification failures, only logs warnings
     """
     db_path_obj = Path(db_path)
@@ -69,7 +114,6 @@ def emit_priority_action(
             existing = cursor.fetchone()
             
             if existing:
-                # Return existing action_id, no email needed
                 return existing[0]
             
             # Create new action
@@ -87,10 +131,11 @@ def emit_priority_action(
                 created_at, "priority_inbox", "pending", priority, expires_at, source_key
             ))
             
-            # Send email notification if priority >= 2
-            if priority >= 2:
-                _send_priority_email_notification(
-                    conn, action_id, title, description, priority
+            # Arrival is one event, even when the due date is still far away.
+            # A later day only messages again if the bill becomes urgent.
+            if priority >= 3 or kind in BILL_KINDS:
+                _send_priority_whatsapp_notification(
+                    conn, action_id, title, description, payload
                 )
             
             return action_id
@@ -163,115 +208,144 @@ def list_open_priority_actions(
         conn.close()
 
 
-def _send_priority_email_notification(
+def refresh_open_bill_priorities(db_path: str = "khursheed.db") -> List[str]:
+    """Raise stored bill priorities as the due date gets closer.
+
+    Reads only the local pending_actions rows. Does not open a mailbox.
+    WhatsApp is sent only when an item first reaches priority 3.
+    """
+    db_path_obj = Path(db_path)
+    conn = sqlite3.connect(db_path_obj, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    updated: List[str] = []
+    try:
+        with conn:
+            rows = conn.execute(
+                """
+                SELECT action_id, action_type, title, description, payload_json, priority
+                FROM pending_actions
+                WHERE status = 'pending'
+                  AND action_type IN ('new_bill', 'overdue_payment', 'trial_ending')
+                """
+            ).fetchall()
+            for action_id, kind, title, description, payload_json, old_priority in rows:
+                try:
+                    payload = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    payload = {}
+                new_priority, expires_at = priority_for_bill(kind, payload.get("due_date"))
+                old_priority = old_priority or 0
+                if new_priority <= old_priority:
+                    continue
+                conn.execute(
+                    """
+                    UPDATE pending_actions
+                    SET priority = ?, expires_at = ?
+                    WHERE action_id = ?
+                    """,
+                    (new_priority, expires_at, action_id),
+                )
+                updated.append(action_id)
+                if new_priority >= 3 and old_priority < 3:
+                    _send_priority_whatsapp_notification(
+                        conn, action_id, title or "", description or "", payload
+                    )
+        return updated
+    finally:
+        conn.close()
+
+
+def _whatsapp_detail(payload: dict, description: str) -> str:
+    """One line for the template: vendor, amount, and due date when present."""
+    vendor = payload.get("vendor")
+    amount = payload.get("amount")
+    currency = payload.get("currency") or ""
+    due_date = payload.get("due_date")
+    parts: list[str] = []
+    if vendor:
+        parts.append(str(vendor))
+    if amount not in (None, ""):
+        parts.append(f"{amount} {currency}".strip())
+    if due_date:
+        parts.append(f"due {due_date}")
+    if parts:
+        line = " · ".join(parts)
+    else:
+        line = description or "Open the desk for details."
+    return f"{line}. Have you paid this?"
+
+
+def _log_notification(
+    conn: sqlite3.Connection,
+    *,
+    notification_type: str,
+    recipient: str,
+    subject: str,
+    content: str,
+    status: str,
+    action_id: str,
+    error_message: str | None = None,
+    sent_at: str | None = None,
+) -> None:
+    created_at = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """
+        INSERT INTO notification_log (
+            log_id, notification_type, recipient, subject, content,
+            status, sent_at, error_message, related_action_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()),
+            notification_type,
+            recipient,
+            subject,
+            content,
+            status,
+            sent_at,
+            error_message,
+            action_id,
+            created_at,
+        ),
+    )
+
+
+def _send_priority_whatsapp_notification(
     conn: sqlite3.Connection,
     action_id: str,
-    title: str, 
+    title: str,
     description: str,
-    priority: int
+    payload: dict,
 ) -> None:
-    """
-    Send email notification for priority action.
-    
-    Args:
-        conn: Database connection for logging
-        action_id: Action ID to link notification log
-        title: Action title
-        description: Action description  
-        priority: Priority level
-        
-    Note:
-        Never raises exceptions - degrades gracefully and logs warnings
-    """
-    log_id = str(uuid.uuid4())
-    created_at = datetime.now(timezone.utc).isoformat()
-    
-    # Get email configuration from environment
-    email_to = os.getenv("KHURSHEED_PRIORITY_EMAIL_TO")
-    email_from = os.getenv("KHURSHEED_PRIORITY_EMAIL_FROM") 
-    email_password = os.getenv("KHURSHEED_PRIORITY_EMAIL_PASSWORD")
-    smtp_host = os.getenv("KHURSHEED_PRIORITY_EMAIL_SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("KHURSHEED_PRIORITY_EMAIL_SMTP_PORT", "587"))
-    
-    # Check required configuration
-    if not all([email_to, email_from, email_password]):
-        # Log warning and skip email
-        logger.warning(
-            "Priority email configuration incomplete - skipping notification for action %s", 
-            action_id
-        )
-        
-        # Log the skip to notification_log
-        conn.execute("""
-            INSERT INTO notification_log (
-                log_id, notification_type, recipient, subject, content,
-                status, error_message, related_action_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            log_id, "email", email_to or "unknown", 
-            f"Priority Action: {title}",
-            f"Description: {description}\nPriority: {priority}",
-            "failed", "Email configuration incomplete (missing env vars)",
-            action_id, created_at
-        ))
-        return
-    
-    # Attempt to send email
+    """Send a WhatsApp template for an urgent action. Never raises."""
+    detail = _whatsapp_detail(payload or {}, description)
+    recipient = "configured"
     try:
-        priority_text = {0: "Low", 1: "Medium", 2: "High", 3: "Urgent"}.get(priority, "Unknown")
-        subject = f"🚨 {priority_text} Priority Action: {title}"
-        content = f"""
-Priority Action Alert
-
-Title: {title}
-Priority: {priority_text} ({priority})
-Action ID: {action_id}
-
-Description:
-{description}
-
-This is an automated notification from Khursheed Priority Inbox.
-Please review and take appropriate action.
-        """.strip()
-        
-        # Create and send email
-        notifier = EmailNotifier(
-            sender=email_from,
-            password=email_password, 
-            recipient=email_to,
-            subject=subject,
-            smtp_host=smtp_host,
-            smtp_port=smtp_port
+        result = send_whatsapp_template(title, detail)
+        _log_notification(
+            conn,
+            notification_type="whatsapp",
+            recipient=result,
+            subject=title,
+            content=detail,
+            status="sent",
+            action_id=action_id,
+            sent_at=datetime.now(timezone.utc).isoformat(),
         )
-        
-        result = notifier.send(content)
-        sent_at = datetime.now(timezone.utc).isoformat()
-        
-        # Log successful send
-        conn.execute("""
-            INSERT INTO notification_log (
-                log_id, notification_type, recipient, subject, content,
-                status, sent_at, related_action_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            log_id, "email", email_to, subject, content,
-            "sent", sent_at, action_id, created_at
-        ))
-        
-        logger.info("Priority email sent for action %s: %s", action_id, result)
-        
-    except Exception as e:
-        # Log error and continue - never raise
-        error_msg = f"Failed to send priority email: {str(e)}"
-        logger.warning("Priority email failed for action %s: %s", action_id, error_msg)
-        
-        # Log the failure to notification_log
-        conn.execute("""
-            INSERT INTO notification_log (
-                log_id, notification_type, recipient, subject, content,
-                status, error_message, related_action_id, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            log_id, "email", email_to, subject, content,
-            "failed", error_msg, action_id, created_at
-        ))
+        logger.info("Priority WhatsApp sent for action %s: %s", action_id, result)
+    except Exception as exc:
+        error_msg = f"Failed to send priority WhatsApp: {exc}"
+        logger.warning("Priority WhatsApp failed for action %s: %s", action_id, error_msg)
+        _log_notification(
+            conn,
+            notification_type="whatsapp",
+            recipient=recipient,
+            subject=title,
+            content=detail,
+            status="failed",
+            action_id=action_id,
+            error_message=error_msg,
+        )

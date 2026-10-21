@@ -41,6 +41,14 @@ class SifterSkill(Skill):
         results: List[Dict[str, Any]] = []
         expenses = self._load_expenses()
         priority_actions: List[Dict[str, Any]] = []
+        # Bills already saved are re-ranked from their due date. This does not
+        # open a mailbox, so the IMAP window can stay at two days.
+        try:
+            from priority_inbox import refresh_open_bill_priorities
+
+            refresh_open_bill_priorities(str(_PROJECT_ROOT / "khursheed.db"))
+        except Exception as exc:
+            logger.warning("Could not refresh stored bill priorities: %s", exc)
 
         for account in self._accounts:
             categorized, account_priority_actions = self._process_account(account, max_messages)
@@ -120,19 +128,36 @@ class SifterSkill(Skill):
         return " ".join(decoded_parts)
 
     def _extract_body(self, msg: Message) -> str:
-        if msg.is_multipart():
-            parts = [part for part in msg.walk() if part.get_content_type() == "text/plain"]
-        else:
-            parts = [msg]
-        bodies = []
+        plain_parts: list[str] = []
+        html_parts: list[str] = []
+        parts = list(msg.walk()) if msg.is_multipart() else [msg]
         for part in parts:
+            kind = part.get_content_type()
+            if kind not in ("text/plain", "text/html"):
+                continue
             payload = part.get_payload(decode=True)
-            if payload:
-                try:
-                    bodies.append(payload.decode(part.get_content_charset() or "utf-8", errors="ignore"))
-                except LookupError:
-                    bodies.append(payload.decode("utf-8", errors="ignore"))
-        return "\n".join(bodies).strip()
+            if not payload:
+                continue
+            try:
+                text = payload.decode(part.get_content_charset() or "utf-8", errors="ignore")
+            except LookupError:
+                text = payload.decode("utf-8", errors="ignore")
+            if kind == "text/html":
+                html_parts.append(self._html_to_text(text))
+            else:
+                plain_parts.append(text)
+        plain = "\n".join(plain_parts).strip()
+        html = "\n".join(html_parts).strip()
+        # Utility bills often put the amount and due date only in the HTML part.
+        if len(html) > len(plain):
+            return html
+        return plain
+
+    @staticmethod
+    def _html_to_text(html: str) -> str:
+        text = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", html)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
 
     def _categorize(self, subject: str, sender: str, body: str) -> str:
         header = f"{subject} {sender}".lower()
@@ -260,7 +285,12 @@ class SifterSkill(Skill):
             # Stage 2: OpenAI extraction (expensive, only for candidates)
             extraction = self._extract_financial_details(subject, sender, body, financial_kind)
             
-            if extraction.get("kind") in (None, "none") or extraction.get("confidence") == "low":
+            if extraction.get("kind") in (None, "none"):
+                return None
+            # A keyword-only guess with no amount and no due date is not a bill.
+            # A real due date is kept even when confidence is low, so it can be
+            # raised later without reading this message again.
+            if extraction.get("confidence") == "low" and not extraction.get("due_date") and extraction.get("amount") in (None, ""):
                 return None
 
             # Priority and expiry calculation
@@ -326,6 +356,18 @@ class SifterSkill(Skill):
             
         return None
 
+    @staticmethod
+    def _parse_model_json(result_text: str) -> Dict[str, Any]:
+        text = (result_text or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"```$", "", text).strip()
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            text = text[start:end + 1]
+        return json.loads(text)
+
     def _extract_financial_details(self, subject: str, sender: str, body: str, candidate_kind: str) -> Dict[str, Any]:
         """Stage 2: OpenAI extraction or fallback to keyword-only"""
         try:
@@ -364,8 +406,8 @@ class SifterSkill(Skill):
                 temperature=0.1
             )
             
-            result_text = response.choices[0].message.content.strip()
-            extraction = json.loads(result_text)
+            result_text = response.choices[0].message.content or ""
+            extraction = self._parse_model_json(result_text)
             
             # Validate required fields
             if not isinstance(extraction.get("kind"), str):
@@ -401,26 +443,21 @@ class SifterSkill(Skill):
         
         # Try to extract due date (basic patterns)
         due_date = None
+        from priority_inbox import normalize_due_date
+
         date_patterns = [
-            r"due (\d{1,2}/\d{1,2}/\d{4})",
+            r"due[:\s]+(\d{1,2}/\d{1,2}/\d{4})",
+            r"by[:\s]+(\d{1,2}/\d{1,2}/\d{4})",
+            r"expires?[:\s]+(\d{1,2}/\d{1,2}/\d{4})",
             r"(\d{4}-\d{2}-\d{2})",
-            r"expires? (\d{1,2}/\d{1,2}/\d{4})"
+            r"\b(\d{1,2}/\d{1,2}/\d{4})\b",
         ]
         for pattern in date_patterns:
             match = re.search(pattern, text)
             if match:
-                try:
-                    # Convert to YYYY-MM-DD format
-                    date_str = match.group(1)
-                    if "/" in date_str:
-                        parts = date_str.split("/")
-                        if len(parts) == 3:
-                            due_date = f"{parts[2]}-{parts[0]:0>2}-{parts[1]:0>2}"
-                    else:
-                        due_date = date_str
+                due_date = normalize_due_date(match.group(1))
+                if due_date:
                     break
-                except:
-                    continue
 
         return {
             "kind": candidate_kind,
@@ -433,38 +470,14 @@ class SifterSkill(Skill):
         }
 
     def _calculate_priority_and_expiry(self, extraction: Dict[str, Any]) -> tuple[int, Optional[str]]:
-        """Calculate priority and expiry based on extraction data"""
-        kind = extraction.get("kind")
-        due_date = extraction.get("due_date")
-        
-        # overdue_payment -> priority 3, no expiry
-        if kind == "overdue_payment":
-            return 3, None
-            
-        # For new_bill and trial_ending, calculate based on due/end date
-        if due_date:
-            try:
-                due_dt = datetime.fromisoformat(due_date + "T23:59:59")
-                now = datetime.now()
-                days_until = (due_dt - now).days
-                
-                if days_until <= 2:
-                    priority = 3  # Urgent
-                elif days_until <= 7:
-                    priority = 2  # High
-                else:
-                    priority = 1  # Medium
-                    
-                # Set expiry to the due date
-                expires_at = due_dt.isoformat()
-                return priority, expires_at
-                
-            except (ValueError, TypeError):
-                # Invalid date format, default to medium priority
-                pass
-        
-        # Default for new_bill/trial_ending without valid date
-        return 1, None
+        """Calculate priority and expiry based on extraction data."""
+        from priority_inbox import normalize_due_date
+        from priority_inbox import priority_for_bill
+
+        normalized = normalize_due_date(extraction.get("due_date"))
+        if normalized:
+            extraction["due_date"] = normalized
+        return priority_for_bill(extraction.get("kind") or "", normalized)
 
     def _create_priority_action(
         self, extraction: Dict[str, Any], subject: str, sender: str,
