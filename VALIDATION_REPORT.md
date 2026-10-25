@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-24  
 **Validation Type:** Comprehensive Architecture & Security  
-**Status:** ✅ **PASSED**
+**Status:** Passed on 2026-05-24, except global-state elimination, which does not pass.
 
 ## 🎯 Executive Summary
 
@@ -15,7 +15,7 @@ The Enaam system has been successfully validated against all architectural and s
 | Category | Component | Status | Details |
 |----------|-----------|---------|---------|
 | **Architecture** | Dependency Injection | ✅ PASSED | Service container working, factory functions implemented |
-| **Architecture** | Global State Elimination | ✅ PASSED | No global mutable state in new components |
+| **Architecture** | Global State Elimination | Not passed | As of 2026-10-25 the `enaam` package still keeps process-wide singletons: the default service container, the config cache, the service factory, and the root adapter, orchestrator, and skill loader. The daily desk (`hey_eman_app.py`) does not use this package. |
 | **Architecture** | Import Structure | ✅ PASSED | Clean imports, no circular dependencies |
 | **Security** | Error Leakage Prevention | ✅ PASSED | Comprehensive sanitization system active |
 | **Security** | Input Validation | ✅ PASSED | Rate limiting, parameter validation, injection detection |
@@ -25,7 +25,7 @@ The Enaam system has been successfully validated against all architectural and s
 
 ### ⚠️ WARNINGS (Non-Critical)
 
-- **Legacy Global State**: 15 instances in legacy modules (acceptable)
+- **Global state**: The 2026-05-24 note that only legacy modules kept mutable globals is outdated. The package singletons listed above are still in the tree.
 - **Logging Patterns**: Some `logger = logging.getLogger` patterns (mostly in factory functions)
 
 ## 🛡️ Security Features Validated

@@ -1,5 +1,7 @@
 # 🤖 Enaam Command Center
 
+This document describes the older command center (`enaam_ui.py` and `enaam_orchestrator.py`). The live desk is `hey_eman_app.py` on port 8510. See `CLAUDE.md`.
+
 ## Overview
 
 The Enaam Command Center is a unified, stable AI assistant control system that consolidates all Khursheed/Enaam functionality through a single orchestration layer. This implementation follows Victor-style principles: simpler, stable, and traceable.

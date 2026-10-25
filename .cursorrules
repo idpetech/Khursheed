@@ -14,5 +14,9 @@ Mapping
 Tech Stack
 - Python for implementation.
 - SQLite for state.
-- LangGraph for orchestration.
 - Tavily for lead discovery.
+
+Live desk
+- The running app is hey_eman_app.py on port 8510, virtualenv .venv.
+- enaam_ui.py, enaam_admin.py, enaam_skill_api.py, and scripts/start_enaam_services.sh are an older stack. Do not start that script, and do not treat it as production.
+- Read CLAUDE.md before any architecture change.

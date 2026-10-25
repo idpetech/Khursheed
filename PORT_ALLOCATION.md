@@ -1,22 +1,24 @@
 # Enaam Port Allocation Strategy
 
-To prevent port conflicts between services, here's the official port allocation for the Enaam system:
+The table below is the older service stack. It is not the live desk. The daily app is `hey_eman_app.py` on port **8510**. See `CLAUDE.md`. Do not start `scripts/start_enaam_services.sh` while that desk is running; the script treats 8510 as a conflict it may kill.
 
-## 🎯 Production Services (Fixed Ports)
+To prevent port conflicts between services, here is the port allocation for the older stack:
+
+## Older stack (not the live desk)
 
 | Service | Port | Description | File |
 |---------|------|-------------|------|
-| **Enaam Command Center** | `8501` | Main Streamlit UI | `enaam_ui.py` |
+| **Enaam Command Center** | `8501` | Older Streamlit UI | `enaam_ui.py` |
 | **Enaam Skill Management API** | `5001` | RESTful API for skill config | `enaam_skill_api.py` |
 | **Enaam Admin UI** | `8502` | Admin interface for skill management | `enaam_admin.py` |
 | **Enaam MCP Server** | `8080` | Model Context Protocol server | `enaam/mcp_server.py` |
 
-## 🧪 Development/Testing Ports (Dynamic Range)
+## Other ports
 
 | Purpose | Port Range | Description |
 |---------|------------|-------------|
 | **Integration Tests** | `8090-8099` | Automated test suites |
-| **Development Servers** | `8510-8519` | Local development instances |
+| **Live desk** | `8510` | `hey_eman_app.py`. This is the app in daily use. |
 | **Temporary Services** | `9000-9099` | One-off testing services |
 
 ## 🔧 Service Configuration Updates
