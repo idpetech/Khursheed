@@ -5,6 +5,7 @@ from executive_summary import generate_executive_summary
 from manager import Manager
 from notifications import daily_brief_notifier
 from runtime import prepare_runtime
+from schedule_sync import run_morning_skills
 from skills_bootstrap import register_default_skills
 
 
@@ -14,7 +15,7 @@ def main() -> None:
     manager = Manager()
     register_default_skills(manager)
     tasks = prepare_desk_tasks(manager.load_tasks("tasks.json"), manager._db_path)
-    manager.run_tasks(tasks)
+    run_morning_skills(manager, tasks)
     generate_executive_summary(manager, daily_brief_notifier())
 
 

@@ -17,6 +17,8 @@ from desk_settings import prepare_desk_tasks
 from desk_settings import remove_icp_company
 from desk_settings import set_setting
 from executive_summary import _format_leads
+from executive_summary import mobile_update
+from schedule_sync import skill_is_due
 from notifications import TelegramNotifier
 from notifications import _telegram_chunks
 from skills.sifter import SifterSkill
@@ -42,6 +44,100 @@ class DeskSettingTests(unittest.TestCase):
         self.assertIsNone(parse_morning_time("7pm"))
         self.assertEqual(parse_morning_time("7:05"), (7, 5))
 
+    def test_icp_switch_saves_from_the_save_button(self):
+        from streamlit.testing.v1 import AppTest
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            script = f"""
+import sys
+sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+import streamlit as st
+from desk_settings import icp_enabled
+from hey_eman_app import _ensure_research_state, _persist_research
+
+db = {db_path!r}
+_ensure_research_state(db)
+if st.button("Save", key="save-research"):
+    _persist_research(db)
+with st.container(key="config-scroll"):
+    st.checkbox("Include ICP companies in the morning run", key="desk_icp_enabled")
+"""
+            app = AppTest.from_string(script, default_timeout=10)
+            app.run()
+            self.assertFalse(icp_enabled(db_path))
+            app.checkbox[0].set_value(True).run()
+            self.assertFalse(icp_enabled(db_path))
+            app.button[0].click().run()
+            self.assertTrue(icp_enabled(db_path))
+            self.assertTrue(app.checkbox[0].value)
+
+    def test_mobile_update_is_short_and_hides_the_raw_network_error(self):
+        report = "\n".join(
+            [
+                "# Executive Summary - 2026-11-15",
+                "",
+                "## Priority Alerts",
+                "_No open priority alerts._",
+                "",
+                "## Tasks Completed",
+                "- `sifter` for `task` at whenever",
+                "",
+                "## Pending Bills",
+                "- AT&T - 418.13 USD due 2026-12-10",
+                "",
+                "## Top Leads",
+                "_No leads found in the last 7 days._",
+                "",
+                "Last search failed: <urlopen error Tunnel connection failed: 403 Forbidden>",
+                "",
+                "## Fractional CTO Opportunities",
+                "_No fractional CTO opportunities found in the last 7 days._",
+                "",
+                "## Top ICP Companies",
+                "_ICP is off. Turn it on in Config._",
+                "",
+                "## Open Loops",
+                "- Now Hiring: 500 Fractional Chief Technology Officer Jobs",
+                "",
+                "## Recommended Actions",
+                "1. No further recommendation.",
+                "2. Follow up: Interim CTO at Intellicheck",
+                "",
+            ]
+        )
+        text = mobile_update(report)
+        self.assertIn("Enaam · 2026-11-15", text)
+        self.assertIn("AT&T - 418.13 USD due 2026-12-10", text)
+        self.assertNotIn("Handle priority action", text)
+        self.assertIn("Search failed", text)
+        self.assertNotIn("urlopen", text)
+        self.assertNotIn("Now Hiring", text)
+        self.assertNotIn("sifter", text)
+        self.assertIn("Off. Turn it on in Config.", text)
+        self.assertIn("Next: Follow up: Interim CTO at Intellicheck", text)
+        morning = datetime(2026, 11, 15, 7, 0, tzinfo=datetime.now().astimezone().tzinfo)
+        self.assertTrue(
+            skill_is_due(
+                "2026-11-14T16:44:07+00:00",
+                "failed",
+                '{"error": "tunnel"}',
+                "lead_scout",
+                3,
+                morning,
+            )
+        )
+        self.assertFalse(
+            skill_is_due(
+                "2026-11-15T12:00:00+00:00",
+                "completed",
+                '{"queries": [{"leads": [{"title": "A"}]}]}',
+                "lead_scout",
+                3,
+                morning,
+            )
+        )
+
     def test_icp_stays_off_until_enabled_and_a_removed_company_stays_gone(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "t.db"
@@ -59,7 +155,9 @@ class DeskSettingTests(unittest.TestCase):
                 db_path,
             )
             self.assertFalse(any("icp_prospector" in task["skills"] for task in tasks))
+            self.assertFalse(any("icp_finder" in task["skills"] for task in tasks))
             set_setting(db_path, "icp_enabled", "1")
+            set_setting(db_path, "icp_notes", "US, no CTO")
             set_setting(db_path, "lead_queries", "warehouse robots\nflorida cto")
             tasks = prepare_desk_tasks(
                 [{"id": "task-003", "skills": ["lead_scout"], "interval_days": 3, "payload": {}}],
@@ -68,6 +166,8 @@ class DeskSettingTests(unittest.TestCase):
             lead = next(task for task in tasks if "lead_scout" in task["skills"])
             self.assertEqual(lead["payload"]["queries"], ["warehouse robots", "florida cto"])
             self.assertTrue(any("icp_prospector" in task["skills"] for task in tasks))
+            finder = next(task for task in tasks if "icp_finder" in task["skills"])
+            self.assertEqual(finder["payload"]["notes"], "US, no CTO")
 
     def test_brief_names_a_failed_search(self):
         text = _format_leads([], "the last 7 days", "Tunnel connection failed: 403 Forbidden")

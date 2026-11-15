@@ -13,6 +13,7 @@ from skills.calculator import CalculatorSkill
 from skills.cto_radar import CtoRadarSkill
 from skills.echo import EchoSkill
 from skills.file_analyzer import FileAnalyzerSkill
+from skills.icp_finder import IcpFinderSkill
 from skills.icp_prospector import IcpProspectorSkill
 from skills.lead_scout import LeadScoutSkill
 from skills.scout import ScoutSkill
@@ -35,6 +36,7 @@ DEFAULT_SKILL_CLASSES: list[type[Skill]] = [
     ScoutSkill,
     SifterSkill,
     CtoRadarSkill,
+    IcpFinderSkill,
     IcpProspectorSkill,
     BloggerSkill,
 ]

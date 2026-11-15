@@ -99,6 +99,10 @@ class TelegramNotifier(Notifier):
                 "Telegram configuration incomplete; daily brief not sent"
             )
             return "Telegram skipped (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)"
+        if content.lstrip().startswith("# Executive Summary"):
+            from executive_summary import mobile_update
+
+            content = mobile_update(content)
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         chunks = _telegram_chunks(content)
         try:

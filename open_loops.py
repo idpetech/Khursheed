@@ -89,6 +89,45 @@ def list_open_loops(
         conn.close()
 
 
+def close_open_loop(
+    loop_id: str,
+    db_path: str | Path = "khursheed.db",
+) -> dict[str, Any]:
+    """Remove a saved lead from the open list. The same page is not added again."""
+    resolved = resolve_db_path(db_path)
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE open_loops
+                SET status = 'closed', updated_at = ?
+                WHERE loop_id = ? AND status = 'open'
+                """,
+                (now, loop_id),
+            )
+            closed = cursor.rowcount > 0
+    except sqlite3.Error as exc:
+        logger.warning("Could not close open loop %s: %s", loop_id, exc)
+        return {"status": "error", "message": "Could not clear that item."}
+    finally:
+        conn.close()
+    if not closed:
+        return {"status": "error", "message": "That item is already cleared."}
+    return {"status": "ok", "message": "Cleared."}
+
+
+def loop_url(loop: dict[str, Any]) -> str:
+    """Return the page saved with a lead, when the source key holds a URL."""
+    key = str(loop.get("source_key") or "")
+    if ":" in key:
+        _, _, rest = key.partition(":")
+        if rest.startswith("http"):
+            return rest
+    return key if key.startswith("http") else ""
+
+
 def record_cto_opportunities(
     opportunities: list[dict[str, Any]],
     db_path: str | Path = "khursheed.db",

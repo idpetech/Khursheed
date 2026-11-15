@@ -324,6 +324,7 @@ class SummaryCoverageTests(unittest.TestCase):
         )
         manager._connection.commit()
         emit_open_loop("cto_radar", "cto:due", "Call Ada", due_at="2026-10-20", db_path=db_path)
+        _insert_pending(db_path, "bill-invoice", "new_bill", "Invoice", priority=1)
         _insert_pending(db_path, "alert-1", "alert", "Pager", priority=3)
         report = generate_executive_summary(manager, RecordingNotifier())
         self.assertIn("Role", report)

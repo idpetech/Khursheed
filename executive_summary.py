@@ -36,7 +36,7 @@ def generate_executive_summary(
     window = _window_phrase(lookback_days)
 
     tasks_section = _format_tasks(runs, lookback_days)
-    pending_bills = _extract_pending_bills(runs)
+    pending_bills = _format_desk_bills(_desk_bills(db_path))
     leads = _extract_top_leads(runs, limit=3)
     priority_alerts = _extract_priority_alerts(min_priority=2, db_path=db_path)
     cto_opportunities = _extract_cto_opportunities(runs, limit=5)
@@ -45,6 +45,20 @@ def generate_executive_summary(
     priority_action = _highest_other_priority_action(db_path)
     linkedin_draft = _newest_linkedin_draft(db_path)
     recommendations = _build_recommendations(priority_action, open_loops, linkedin_draft)
+
+    icp_text = _format_icp_companies(icp_companies, window, _research_error(runs, "icp_prospector"))
+    try:
+        from desk_settings import icp_enabled
+
+        if not icp_companies and not icp_enabled(db_path):
+            icp_text = "_ICP is off. Turn it on in Config._"
+        elif not icp_companies:
+            waiting = _waiting_icp_choices(db_path)
+            if waiting:
+                noun = "company is" if waiting == 1 else "companies are"
+                icp_text = f"_{waiting} {noun} waiting in To review._"
+    except Exception:
+        pass
 
     report = "\n".join(
         [
@@ -57,7 +71,7 @@ def generate_executive_summary(
             tasks_section,
             "",
             "## Pending Bills",
-            _format_pending_bills(pending_bills),
+            pending_bills,
             "",
             "## Top Leads",
             _format_leads(leads, window, _research_error(runs, "lead_scout")),
@@ -68,7 +82,7 @@ def generate_executive_summary(
             ),
             "",
             "## Top ICP Companies",
-            _format_icp_companies(icp_companies, window, _research_error(runs, "icp_prospector")),
+            icp_text,
             "",
             "## Open Loops",
             _format_open_loops(open_loops),
@@ -80,6 +94,85 @@ def generate_executive_summary(
     )
     notifier.send(report)
     return report
+
+
+def mobile_update(report: str) -> str:
+    """A few lines for Telegram. The desk file keeps the full brief."""
+    sections = _report_sections(report)
+    date = "today"
+    for line in report.splitlines():
+        if line.startswith("# Executive Summary - "):
+            date = line.split(" - ", 1)[1].strip()
+            break
+    parts = [f"Enaam · {date}", ""]
+    parts.extend(_mobile_lines("Bills", sections.get("Pending Bills"), "No bills."))
+    parts.extend(_mobile_lines("Needs you", sections.get("Priority Alerts"), "Nothing needs you."))
+    parts.extend(_mobile_lines("Leads", sections.get("Top Leads"), "No new leads."))
+    parts.extend(_mobile_lines("CTO", sections.get("Fractional CTO Opportunities"), "No new CTO roles."))
+    parts.extend(_mobile_lines("ICP", sections.get("Top ICP Companies"), "No ICP companies."))
+    nxt = _mobile_next(sections.get("Recommended Actions", ""))
+    if nxt:
+        parts.extend(["", f"Next: {nxt}"])
+    return "\n".join(parts).strip()
+
+
+def _report_sections(report: str) -> dict[str, str]:
+    sections: dict[str, str] = {}
+    current = ""
+    body: list[str] = []
+    for line in report.splitlines():
+        if line.startswith("## "):
+            if current:
+                sections[current] = "\n".join(body).strip()
+            current = line[3:].strip()
+            body = []
+        else:
+            body.append(line)
+    if current:
+        sections[current] = "\n".join(body).strip()
+    return sections
+
+
+def _mobile_lines(label: str, body: str | None, empty: str) -> list[str]:
+    text = _mobile_sentence(body or "", empty)
+    return [label, text, ""]
+
+
+def _mobile_sentence(body: str, empty: str) -> str:
+    lowered = body.lower()
+    if "icp is off" in lowered:
+        return "Off. Turn it on in Config."
+    if "last search failed" in lowered or "tunnel connection" in lowered or "urlopen error" in lowered:
+        return "Search failed. The next morning run will try again."
+    bullets = []
+    for line in body.splitlines():
+        item = line.strip()
+        if not item.startswith("- "):
+            continue
+        item = item[2:]
+        item = item.split(" - http", 1)[0].strip()
+        if item and not item.startswith("_"):
+            bullets.append(item)
+        if len(bullets) == 3:
+            break
+    if bullets:
+        return "\n".join(f"• {item}" for item in bullets)
+    if body.startswith("_No ") or "no open priority" in lowered or not body.strip():
+        return empty
+    first = body.strip().strip("_")
+    return first[:180] if first else empty
+
+
+def _mobile_next(body: str) -> str:
+    for line in body.splitlines():
+        item = line.strip()
+        if not item or item.startswith("_"):
+            continue
+        item = item.split(". ", 1)[-1] if item[0].isdigit() else item
+        if item.lower().startswith("no further"):
+            continue
+        return item[:180]
+    return ""
 
 
 def _extract_priority_alerts(min_priority: int = 2, db_path: str = "khursheed.db") -> List[Dict[str, Any]]:
@@ -112,7 +205,11 @@ def _highest_other_priority_action(db_path: str) -> Dict[str, Any] | None:
         actions = priority_inbox.list_open_priority_actions(min_priority=0, db_path=db_path)
     except Exception:  # noqa: BLE001
         return None
-    candidates = [action for action in actions if action.get("action_type") != "linkedin_post_draft"]
+    candidates = [
+        action
+        for action in actions
+        if action.get("action_type") not in {"linkedin_post_draft", *priority_inbox.BILL_KINDS}
+    ]
     if not candidates:
         return None
     return sorted(
@@ -336,6 +433,16 @@ def _format_cto_opportunities(
     return "\n".join(lines)
 
 
+def _waiting_icp_choices(db_path: str) -> int:
+    try:
+        import priority_inbox
+
+        actions = priority_inbox.list_open_priority_actions(min_priority=0, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        return 0
+    return sum(1 for action in actions if action.get("action_type") == "icp_candidate")
+
+
 def _extract_icp_companies(runs: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
     companies: List[Dict[str, Any]] = []
     for run in runs:
@@ -382,6 +489,32 @@ def _format_tasks(runs: List[Dict[str, Any]], lookback_days: int = 1) -> str:
             f"- `{run['skill_name']}` for `{run['task_id']}` at {run['executed_at']}"
         )
     return "\n".join(lines)
+
+
+def _desk_bills(db_path: str) -> List[Dict[str, Any]]:
+    """Open bills, the same rows the Today tab lists."""
+    try:
+        import priority_inbox
+
+        actions = priority_inbox.list_open_priority_actions(min_priority=0, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return [action for action in actions if action.get("action_type") in priority_inbox.BILL_KINDS]
+
+
+def _bill_label(action: Dict[str, Any]) -> str:
+    title = str(action.get("title") or "Bill").strip()
+    kind = str(action.get("action_type") or "")
+    prefix = f"{kind}:"
+    if prefix != ":" and title.lower().startswith(prefix):
+        title = title[len(prefix) :].strip()
+    return title or "Bill"
+
+
+def _format_desk_bills(bills: List[Dict[str, Any]]) -> str:
+    if not bills:
+        return "_No pending bills detected._"
+    return "\n".join(f"- {_bill_label(bill)}" for bill in bills)
 
 
 def _extract_pending_bills(runs: List[Dict[str, Any]]) -> List[Dict[str, str]]:

@@ -110,6 +110,91 @@ def _upsert_job(
     )
 
 
+def run_morning_skills(
+    manager: Manager,
+    tasks: Iterable[dict[str, Any]],
+    now: datetime | None = None,
+) -> list[str]:
+    """Run each morning skill when a new local day is due, or the last try failed.
+
+    A run at 5 PM no longer blocks the 7 AM job the next morning. A failed
+    search is tried again on the next morning instead of waiting out the
+    whole interval.
+    """
+    moment = now or datetime.now().astimezone()
+    ran: list[str] = []
+    for task in tasks:
+        interval = task.get("interval_days")
+        interval_days = 1 if interval is None else max(int(interval), 1)
+        payload = dict(task.get("payload") or {})
+        task_id = task["id"]
+        for skill in task.get("skills") or []:
+            executed_at, status, result_json = _latest_run(manager, task_id, skill)
+            if not skill_is_due(executed_at, status, result_json, skill, interval_days, moment):
+                continue
+            try:
+                manager.run_skill(skill, task_id, payload)
+            except Exception:
+                logger.exception("Morning skill %s failed for %s", skill, task_id)
+            ran.append(f"{task_id}:{skill}")
+    return ran
+
+
+def skill_is_due(
+    executed_at: str | None,
+    status: str | None,
+    result_json: str | None,
+    skill: str,
+    interval_days: int,
+    now: datetime,
+) -> bool:
+    if executed_at is None or status == "failed" or _result_failed(result_json):
+        return True
+    if skill == "cto_radar" and _cto_empty(result_json):
+        interval_days = 1
+    when = datetime.fromisoformat(executed_at)
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    last_day = when.astimezone(now.tzinfo).date() if now.tzinfo else when.date()
+    return (now.date() - last_day).days >= interval_days
+
+
+def _latest_run(manager: Manager, task_id: str, skill: str) -> tuple[str | None, str | None, str | None]:
+    row = manager._connection.execute(
+        """
+        SELECT executed_at, status, result_json
+        FROM skill_runs
+        WHERE task_id = ? AND skill_name = ?
+        ORDER BY executed_at DESC
+        LIMIT 1
+        """,
+        (task_id, skill),
+    ).fetchone()
+    if row is None:
+        return None, None, None
+    return row[0], row[1], row[2]
+
+
+def _result_failed(result_json: str | None) -> bool:
+    if not result_json:
+        return False
+    try:
+        payload = json.loads(result_json)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and bool(payload.get("error"))
+
+
+def _cto_empty(result_json: str | None) -> bool:
+    if not result_json:
+        return False
+    try:
+        payload = json.loads(result_json)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and not payload.get("opportunities")
+
+
 def _run_due_jobs(manager: Manager, job_names: list[str], now: datetime) -> None:
     if not job_names:
         return

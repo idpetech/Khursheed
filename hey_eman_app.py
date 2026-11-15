@@ -16,6 +16,7 @@ from bill_feedback import reject_not_a_bill
 from billers import add_biller
 from billers import list_billers
 from desk_settings import add_icp_company
+from desk_settings import choose_icp_candidate
 from desk_settings import get_int
 from desk_settings import get_setting
 from desk_settings import icp_enabled
@@ -27,19 +28,21 @@ from desk_settings import remove_icp_company
 from desk_settings import set_setting
 from chat_memory import load_turns
 from chat_memory import record_turn
-from executive_summary import _format_open_loops
 from executive_summary import _format_priority_alerts
 from executive_summary import generate_executive_summary
 from executive_summary import mail_origin
 from llm_agent import HeyEmanAgent
 from manager import Manager
 from notifications import daily_brief_notifier
+from open_loops import close_open_loop
 from open_loops import list_open_loops
+from open_loops import loop_url
 from priority_inbox import BILL_KINDS
 from priority_inbox import list_open_priority_actions
 from priority_inbox import refresh_open_bill_priorities
 from runtime import PROJECT_ROOT
 from runtime import prepare_runtime
+from schedule_sync import run_morning_skills
 from skills_bootstrap import register_default_skills
 
 
@@ -94,6 +97,42 @@ def _inject_base_css() -> None:
         .stTabs [data-baseweb="tab-panel"] {
             overflow: visible;
             padding-right: 0.5rem;
+        }
+        /* Config: Save stays put. The settings below it scroll. */
+        [data-testid="stSidebarContent"] {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
+        [data-testid="stSidebarUserContent"] {
+            display: flex;
+            flex-direction: column;
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+        }
+        [data-testid="stSidebarUserContent"] > div,
+        [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {
+            min-height: 0;
+        }
+        [data-testid="stSidebarUserContent"] > div {
+            flex: 1 1 auto;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            height: 100%;
+        }
+        [data-testid="stSidebar"] [data-testid="stLayoutWrapper"]:has(.st-key-config-scroll) {
+            flex: 1 1 0 !important;
+            min-height: 0 !important;
+            overflow: hidden !important;
+        }
+        [data-testid="stSidebar"] .st-key-config-scroll {
+            flex: 1 1 auto !important;
+            min-height: 0 !important;
+            height: 100% !important;
+            overflow-y: auto !important;
         }
         /* The Ask Enaam input is a globally pinned bar, so scope it to the chat
            (first) tab only: hide it by default, show it when tab 1 is active. */
@@ -151,7 +190,7 @@ def _render_chips(manager: Manager) -> None:
     chips = [
         _chip(f"{decisions} need you", accent=decisions > 0),
         _chip(f"{review} to review", accent=review > 0),
-        _chip(f"{followups} follow-ups"),
+        _chip(f"{followups} saved leads"),
         _chip("brief ready" if brief_ready else "no brief yet", accent=brief_ready),
     ]
     st.markdown('<div class="enaam-chips">' + "".join(chips) + "</div>", unsafe_allow_html=True)
@@ -301,13 +340,32 @@ def _open_bills(db_path: str) -> list[dict]:
     return [action for action in pending if action.get("action_type") in BILL_KINDS]
 
 
+def _render_saved_leads(db_path: str, loops: list[dict]) -> None:
+    """Show each saved search page with a link and a way to clear it."""
+    labels = {"cto_radar": "Fractional CTO search", "icp_prospector": "ICP company"}
+    for loop in loops:
+        title = loop.get("title") or "Saved lead"
+        url = loop_url(loop)
+        st.markdown(f"**{title}**")
+        source = labels.get(str(loop.get("source") or ""), str(loop.get("source") or ""))
+        if source:
+            st.caption(source)
+        open_link, clear = st.columns(2)
+        if url:
+            open_link.link_button("Open", url, use_container_width=True)
+        if clear.button("Clear", key=f"loop-clear-{loop.get('loop_id')}", use_container_width=True):
+            result = close_open_loop(loop.get("loop_id") or "", db_path=db_path)
+            st.session_state.last_ack = result.get("message") or "Cleared."
+            st.rerun()
+
+
 def _render_today(manager: Manager) -> None:
     """Each section is a collapsible card; urgent decisions open by default."""
     db_path = str(manager._db_path)
     refresh_open_bill_priorities(db_path)
     alerts = list_open_priority_actions(min_priority=2, db_path=db_path)
     bills = _open_bills(db_path)
-    loops = list_open_loops(db_path=db_path, limit=8)
+    loops = list_open_loops(db_path=db_path, limit=50)
     brief = st.session_state.get("brief")
 
     with st.expander(f"Bills ({len(bills)})", expanded=bool(bills)):
@@ -324,11 +382,12 @@ def _render_today(manager: Manager) -> None:
         else:
             st.caption("Inbox is clear — nothing needs a decision right now.")
 
-    with st.expander(f"Follow-ups ({len(loops)})", expanded=False):
-        if loops:
-            st.markdown(_format_open_loops(loops))
+    with st.expander(f"Saved leads ({len(loops)})", expanded=False):
+        if not loops:
+            st.caption("No saved leads.")
         else:
-            st.caption("No open follow-ups.")
+            st.caption("Pages from the fractional CTO search. Open one, or clear it.")
+            _render_saved_leads(db_path, loops)
 
     with st.expander("Daily brief", expanded=False):
         if brief:
@@ -343,138 +402,126 @@ def _render_today(manager: Manager) -> None:
         del st.session_state["last_ack"]
 
 
+def _ensure_research_state(db_path: str) -> None:
+    """Load saved settings into the Config widgets once per browser session."""
+    defaults = {
+        "desk_mail_days": get_int(db_path, "mail_lookback_days", 2, 1, 30),
+        "desk_brief_days": get_int(db_path, "brief_lookback_days", 7, 1, 30),
+        "desk_lead_every": get_int(db_path, "lead_interval_days", 3, 1, 30),
+        "desk_lead_queries": get_setting(db_path, "lead_queries"),
+        "desk_cto_queries": get_setting(db_path, "cto_queries"),
+        "desk_icp_enabled": icp_enabled(db_path),
+        "desk_icp_industries": get_setting(db_path, "icp_industries"),
+        "desk_employee_min": get_int(db_path, "icp_employee_min", 10, 1, 100000),
+        "desk_employee_max": get_int(db_path, "icp_employee_max", 50, 1, 100000),
+        "desk_stages": get_setting(db_path, "icp_funding_stages"),
+        "desk_top_n": get_int(db_path, "icp_top_n", 5, 1, 20),
+        "desk_icp_every": get_int(db_path, "icp_interval_days", 3, 1, 30),
+        "desk_icp_notes": get_setting(db_path, "icp_notes", ""),
+        "desk_run_morning": morning_run_enabled(db_path),
+        "desk_morning_time": get_setting(db_path, "morning_run_time", "07:00"),
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def _persist_research(db_path: str) -> None:
+    """Write the Config widgets. Save sits outside the scrolling settings."""
+    state = st.session_state
+    set_setting(db_path, "mail_lookback_days", str(int(state.desk_mail_days)))
+    set_setting(db_path, "brief_lookback_days", str(int(state.desk_brief_days)))
+    set_setting(db_path, "lead_interval_days", str(int(state.desk_lead_every)))
+    set_setting(db_path, "lead_queries", str(state.desk_lead_queries).strip())
+    set_setting(db_path, "cto_queries", str(state.desk_cto_queries).strip())
+    set_setting(db_path, "icp_enabled", "1" if state.desk_icp_enabled else "0")
+    set_setting(db_path, "icp_industries", str(state.desk_icp_industries).strip())
+    set_setting(db_path, "icp_employee_min", str(int(state.desk_employee_min)))
+    set_setting(db_path, "icp_employee_max", str(int(state.desk_employee_max)))
+    set_setting(db_path, "icp_funding_stages", str(state.desk_stages).strip())
+    set_setting(db_path, "icp_top_n", str(int(state.desk_top_n)))
+    set_setting(db_path, "icp_interval_days", str(int(state.desk_icp_every)))
+    set_setting(db_path, "icp_notes", str(state.desk_icp_notes).strip())
+    set_setting(db_path, "morning_run_enabled", "1" if state.desk_run_morning else "0")
+    parsed_time = parse_morning_time(str(state.desk_morning_time))
+    if parsed_time is None:
+        state.last_ack = "Morning time must look like 07:00. Other settings were saved."
+        return
+    hour, minute = parsed_time
+    set_setting(db_path, "morning_run_time", f"{hour:02d}:{minute:02d}")
+    state.last_ack = "Research settings saved."
+
+
 def _render_research(db_path: str) -> None:
     """Mail window, lead queries, and the ICP list the morning run uses."""
     seed = list_icp_seed(db_path)
-    st.caption(
-        "Saved in the desk database. The next morning run uses them. "
-        "ICP stays off until you turn it on. The companies below are samples until you replace them. "
-        "The automatic run uses this Mac's clock and needs the Mac awake within 30 minutes of that time."
-    )
-    with st.form("desk-research"):
-            mail_days = st.number_input(
-                "Days of mail to scan",
-                min_value=1,
-                max_value=30,
-                value=get_int(db_path, "mail_lookback_days", 2, 1, 30),
-            )
-            brief_days = st.number_input(
-                "Days of research to include in the brief",
-                min_value=1,
-                max_value=30,
-                value=get_int(db_path, "brief_lookback_days", 7, 1, 30),
-            )
-            lead_every = st.number_input(
-                "Lead search every N days",
-                min_value=1,
-                max_value=30,
-                value=get_int(db_path, "lead_interval_days", 3, 1, 30),
-            )
-            lead_queries = st.text_area(
-                "Lead searches, one per line",
-                value=get_setting(db_path, "lead_queries"),
-                height=100,
-            )
-            cto_queries = st.text_area(
-                "Fractional CTO searches, one per line",
-                value=get_setting(db_path, "cto_queries"),
-                height=120,
-            )
-            run_icp = st.checkbox("Include ICP companies in the morning run", value=icp_enabled(db_path))
-            industries = st.text_input(
-                "ICP industries, comma separated",
-                value=get_setting(db_path, "icp_industries"),
-            )
-            left, right = st.columns(2)
-            employee_min = left.number_input(
-                "Minimum employees",
-                min_value=1,
-                max_value=100000,
-                value=get_int(db_path, "icp_employee_min", 10, 1, 100000),
-            )
-            employee_max = right.number_input(
-                "Maximum employees",
-                min_value=1,
-                max_value=100000,
-                value=get_int(db_path, "icp_employee_max", 50, 1, 100000),
-            )
-            stages = st.text_input(
-                "Funding stages, comma separated",
-                value=get_setting(db_path, "icp_funding_stages"),
-            )
-            top_n = st.number_input(
-                "ICP companies to keep",
-                min_value=1,
-                max_value=20,
-                value=get_int(db_path, "icp_top_n", 5, 1, 20),
-            )
-            icp_every = st.number_input(
-                "ICP search every N days",
-                min_value=1,
-                max_value=30,
-                value=get_int(db_path, "icp_interval_days", 3, 1, 30),
-            )
-            run_morning = st.checkbox(
-                "Run the morning brief automatically",
-                value=morning_run_enabled(db_path),
-            )
-            morning_time = st.text_input(
-                "Morning run time (24-hour, this Mac)",
-                value=get_setting(db_path, "morning_run_time", "07:00"),
-            )
-            if st.form_submit_button("Save research settings"):
-                set_setting(db_path, "mail_lookback_days", str(int(mail_days)))
-                set_setting(db_path, "brief_lookback_days", str(int(brief_days)))
-                set_setting(db_path, "lead_interval_days", str(int(lead_every)))
-                set_setting(db_path, "lead_queries", lead_queries.strip())
-                set_setting(db_path, "cto_queries", cto_queries.strip())
-                set_setting(db_path, "icp_enabled", "1" if run_icp else "0")
-                set_setting(db_path, "icp_industries", industries.strip())
-                set_setting(db_path, "icp_employee_min", str(int(employee_min)))
-                set_setting(db_path, "icp_employee_max", str(int(employee_max)))
-                set_setting(db_path, "icp_funding_stages", stages.strip())
-                set_setting(db_path, "icp_top_n", str(int(top_n)))
-                set_setting(db_path, "icp_interval_days", str(int(icp_every)))
-                set_setting(db_path, "morning_run_enabled", "1" if run_morning else "0")
-                parsed_time = parse_morning_time(morning_time)
-                if parsed_time is None:
-                    st.session_state.last_ack = "Morning time must look like 07:00. Other settings were saved."
-                else:
-                    hour, minute = parsed_time
-                    set_setting(db_path, "morning_run_time", f"{hour:02d}:{minute:02d}")
-                    st.session_state.last_ack = "Research settings saved."
-                st.rerun()
-    st.markdown(f"**ICP companies ({len(seed)})**")
-    st.caption("A company marked has CTO = yes is skipped. The morning run researches the rest.")
-    with st.form("add-icp", clear_on_submit=True):
-        name = st.text_input("Company")
-        website = st.text_input("Website")
-        industry = st.text_input("Industry", placeholder="saas")
-        employees = st.number_input("Employees", min_value=0, max_value=100000, value=20)
-        stage = st.text_input("Funding stage", placeholder="seed")
-        has_cto = st.selectbox("Has a CTO", ["unknown", "no", "yes"])
-        if st.form_submit_button("Add company") and name.strip():
-            result = add_icp_company(
-                db_path,
-                name,
-                website,
-                industry,
-                int(employees),
-                stage,
-                has_cto,
-            )
-            st.session_state.last_ack = result.get("message") or "Company saved."
-            st.rerun()
-    for row in seed:
-        left, right = st.columns([5, 1])
-        left.markdown(
-            f"**{row['company_name']}** · {row['industry'] or 'industry unset'} · "
-            f"{row['employee_count']} people · {row['funding_stage'] or 'stage unset'}"
+    _ensure_research_state(db_path)
+    if st.button("Save", type="primary", key="save-research", use_container_width=True):
+        _persist_research(db_path)
+    with st.container(key="config-scroll", border=True):
+        st.caption(
+            "The next morning run uses these. "
+            "The automatic run uses this Mac's clock and needs the Mac awake within 30 minutes of that time."
         )
-        if right.button("Remove", key=f"icp-del-{row['company_name']}"):
-            result = remove_icp_company(db_path, row["company_name"])
-            st.session_state.last_ack = result.get("message") or "Removed."
-            st.rerun()
+        st.checkbox("Include ICP companies in the morning run", key="desk_icp_enabled")
+        st.caption("Matching companies are offered in To review. Add keeps one. Skip leaves it off the list.")
+        st.number_input("Days of mail to scan", min_value=1, max_value=30, step=1, key="desk_mail_days")
+        st.number_input(
+            "Days of research to include in the brief",
+            min_value=1,
+            max_value=30,
+            step=1,
+            key="desk_brief_days",
+        )
+        st.number_input("Lead search every N days", min_value=1, max_value=30, step=1, key="desk_lead_every")
+        st.text_area("Lead searches, one per line", height=100, key="desk_lead_queries")
+        st.text_area("Fractional CTO searches, one per line", height=120, key="desk_cto_queries")
+        st.text_input("ICP industries, comma separated", key="desk_icp_industries")
+        left, right = st.columns(2)
+        left.number_input("Minimum employees", min_value=1, max_value=100000, step=1, key="desk_employee_min")
+        right.number_input("Maximum employees", min_value=1, max_value=100000, step=1, key="desk_employee_max")
+        st.text_input("Funding stages, comma separated", key="desk_stages")
+        st.number_input("ICP companies to keep", min_value=1, max_value=20, step=1, key="desk_top_n")
+        st.number_input("ICP search every N days", min_value=1, max_value=30, step=1, key="desk_icp_every")
+        st.text_area(
+            "Anything else a good company should match",
+            height=80,
+            key="desk_icp_notes",
+            placeholder="US, B2B, no full-time CTO",
+        )
+        st.checkbox("Run the morning brief automatically", key="desk_run_morning")
+        st.text_input("Morning run time (24-hour, this Mac)", key="desk_morning_time")
+        st.markdown(f"**ICP companies ({len(seed)})**")
+        st.caption("A company marked has CTO = yes is skipped. The morning run researches the rest.")
+        with st.form("add-icp", clear_on_submit=True):
+            name = st.text_input("Company")
+            website = st.text_input("Website")
+            industry = st.text_input("Industry", placeholder="saas")
+            employees = st.number_input("Employees", min_value=0, max_value=100000, value=20)
+            stage = st.text_input("Funding stage", placeholder="seed")
+            has_cto = st.selectbox("Has a CTO", ["unknown", "no", "yes"])
+            if st.form_submit_button("Add company") and name.strip():
+                result = add_icp_company(
+                    db_path,
+                    name,
+                    website,
+                    industry,
+                    int(employees),
+                    stage,
+                    has_cto,
+                )
+                st.session_state.last_ack = result.get("message") or "Company saved."
+                st.rerun()
+        for row in seed:
+            company, remove = st.columns([5, 1])
+            company.markdown(
+                f"**{row['company_name']}** · {row['industry'] or 'industry unset'} · "
+                f"{row['employee_count']} people · {row['funding_stage'] or 'stage unset'}"
+            )
+            if remove.button("Remove", key=f"icp-del-{row['company_name']}"):
+                result = remove_icp_company(db_path, row["company_name"])
+                st.session_state.last_ack = result.get("message") or "Removed."
+                st.rerun()
 
 
 def _render_billers(db_path: str) -> None:
@@ -521,6 +568,38 @@ def _render_billers(db_path: str) -> None:
 # Rendering: Review queue
 # ---------------------------------------------------------------------------
 
+def _render_icp_candidate(db_path: str, action: dict) -> None:
+    """Let a suggested company be added to the ICP list or skipped."""
+    payload = _parse_payload(action.get("payload_json"))
+    why = action.get("description") or payload.get("why") or ""
+    if why:
+        st.markdown(why)
+    details = " · ".join(
+        part
+        for part in (
+            str(payload.get("industry") or ""),
+            f"{payload.get('employee_count')} people" if payload.get("employee_count") else "",
+            str(payload.get("funding_stage") or ""),
+        )
+        if part
+    )
+    if details:
+        st.caption(details)
+    website = str(payload.get("website") or "").strip()
+    if website:
+        st.markdown(website)
+    add, skip = st.columns(2)
+    action_id = action.get("action_id")
+    if add.button("Add", key=f"icp-add-{action_id}", use_container_width=True):
+        result = choose_icp_candidate(db_path, action_id, accept=True)
+        st.session_state.last_ack = result.get("message") or "Added."
+        st.rerun()
+    if skip.button("Skip", key=f"icp-skip-{action_id}", use_container_width=True):
+        result = choose_icp_candidate(db_path, action_id, accept=False)
+        st.session_state.last_ack = result.get("message") or "Skipped."
+        st.rerun()
+
+
 def _render_review_queue(manager: Manager) -> None:
     db_path = str(manager._db_path)
     pending = list_open_priority_actions(min_priority=0, db_path=db_path)
@@ -539,6 +618,9 @@ def _render_review_queue(manager: Manager) -> None:
             _render_mail_origin(action)
             if action_type == "linkedin_post_draft":
                 _render_blog_draft(action)
+            elif action_type == "icp_candidate":
+                _render_icp_candidate(db_path, action)
+                continue
             elif action_type in BILL_KINDS:
                 _render_bill_question(db_path, action, "review")
                 continue
@@ -807,7 +889,7 @@ def _run_morning(manager: Manager) -> None:
     notifier = _brief_notifier()
     with st.spinner("Reading mail and research. This takes a few minutes."):
         tasks = prepare_desk_tasks(manager.load_tasks("tasks.json"), manager._db_path)
-        manager.run_tasks(tasks)
+        run_morning_skills(manager, tasks)
         st.session_state.brief = generate_executive_summary(manager, notifier)
     st.toast("Morning brief ready")
 

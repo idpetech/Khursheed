@@ -56,7 +56,8 @@ class HeyEmanAgent:
             f"Registered skills: {skill_names}.\n"
             "Use run_skill to run one of those skills. "
             "Use 'sifter' for email, 'cto_radar' for fractional CTO opportunities, "
-            "'icp_prospector' for target companies, 'lead_scout' for general lead generation, "
+            "'icp_finder' to suggest new companies, 'icp_prospector' for companies already chosen, "
+            "'lead_scout' for general lead generation, "
             "and 'blogger' for a LinkedIn draft. The blogger payload REQUIRES a "
             "'theme' string; derive it from the user's request and always include it, "
             'e.g. payload {"mode": "draft", "theme": "fractional CTOs"}. '

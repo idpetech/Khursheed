@@ -15,8 +15,10 @@ from action_executor import approve_and_execute
 from executive_summary import generate_executive_summary
 from llm_agent import HeyEmanAgent
 from manager import Manager
+from open_loops import close_open_loop
 from open_loops import emit_open_loop
 from open_loops import list_open_loops
+from open_loops import loop_url
 from principal_profile import principal_prompt_block
 from runtime import remove_test_pending_actions
 from skills.base import Skill
@@ -186,6 +188,11 @@ class BriefTests(unittest.TestCase):
             second = emit_open_loop("cto_radar", "cto:https://example.com", "Role A again", db_path=db_path)
             self.assertEqual(first, second)
             self.assertEqual(len(list_open_loops(db_path)), 1)
+            self.assertEqual(loop_url({"source_key": "cto:https://example.com"}), "https://example.com")
+            self.assertEqual(close_open_loop(first, db_path=db_path)["status"], "ok")
+            self.assertEqual(list_open_loops(db_path), [])
+            self.assertEqual(emit_open_loop("cto_radar", "cto:https://example.com", "Role A", db_path=db_path), first)
+            self.assertEqual(list_open_loops(db_path), [])
 
     def test_summary_lists_loop_and_three_recommendations(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -204,7 +211,8 @@ class BriefTests(unittest.TestCase):
             notifier = RecordingNotifier()
             report = generate_executive_summary(manager, notifier)
             self.assertIn("Call Northwind", report)
-            self.assertIn("1. Handle priority action: Pay the host", report)
+            self.assertIn("- Pay the host", report)
+            self.assertNotIn("Handle priority action: Pay the host", report)
             self.assertIn("2. Follow up: Call Northwind", report)
             self.assertIn("3. Review LinkedIn draft: Draft: hiring", report)
 

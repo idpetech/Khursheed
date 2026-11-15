@@ -7,6 +7,7 @@ to the defaults below. A removed ICP company is not put back.
 from __future__ import annotations
 
 import csv
+import json
 import re
 import sqlite3
 from datetime import UTC
@@ -63,6 +64,7 @@ DEFAULTS = {
     "icp_employee_max": "50",
     "icp_funding_stages": "seed, series-a, series-b",
     "icp_top_n": "5",
+    "icp_notes": "",
     "morning_run_enabled": "1",
     "morning_run_time": "07:00",
 }
@@ -232,6 +234,7 @@ def icp_payload(db_path: str | Path) -> dict[str, Any]:
         "employee_max": get_int(db_path, "icp_employee_max", 50, 1, 100000),
         "funding_stages": comma_list(db_path, "icp_funding_stages"),
         "top_n": get_int(db_path, "icp_top_n", 5, 1, 20),
+        "notes": get_setting(db_path, "icp_notes", ""),
     }
 
 
@@ -259,15 +262,27 @@ def prepare_desk_tasks(tasks: list[dict[str, Any]], db_path: str | Path) -> list
         item["payload"] = payload
         item["skills"] = skills
         prepared.append(item)
-    if icp_enabled(db_path) and not any("icp_prospector" in task["skills"] for task in prepared):
-        prepared.append(
-            {
-                "id": "task-icp-prospector",
-                "skills": ["icp_prospector"],
-                "interval_days": get_int(db_path, "icp_interval_days", 3, 1, 30),
-                "payload": icp_payload(db_path),
-            }
-        )
+    if icp_enabled(db_path):
+        interval = get_int(db_path, "icp_interval_days", 3, 1, 30)
+        payload = icp_payload(db_path)
+        if not any("icp_finder" in task["skills"] for task in prepared):
+            prepared.append(
+                {
+                    "id": "task-icp-finder",
+                    "skills": ["icp_finder"],
+                    "interval_days": interval,
+                    "payload": payload,
+                }
+            )
+        if not any("icp_prospector" in task["skills"] for task in prepared):
+            prepared.append(
+                {
+                    "id": "task-icp-prospector",
+                    "skills": ["icp_prospector"],
+                    "interval_days": interval,
+                    "payload": payload,
+                }
+            )
     return prepared
 
 
@@ -345,6 +360,66 @@ def remove_icp_company(db_path: str | Path, company_name: str) -> dict[str, Any]
     if not removed:
         return {"status": "error", "message": f"{name} is not on the ICP list."}
     return {"status": "ok", "message": f"Removed {name}."}
+
+
+def choose_icp_candidate(db_path: str | Path, action_id: str, accept: bool) -> dict[str, Any]:
+    """Add a suggested company to the ICP list, or skip it."""
+    resolved = resolve_db_path(db_path)
+    action = _pending_icp_candidate(resolved, action_id)
+    if action is None:
+        return {"status": "error", "message": "That suggestion is no longer waiting."}
+    payload = json.loads(action["payload_json"] or "{}")
+    name = str(payload.get("company_name") or action["title"] or "Company").strip()
+    if accept:
+        add_icp_company(
+            resolved,
+            name,
+            str(payload.get("website") or ""),
+            str(payload.get("industry") or ""),
+            _as_int(payload.get("employee_count"), 0),
+            str(payload.get("funding_stage") or ""),
+            "unknown",
+        )
+        _close_action(resolved, action_id, "acknowledged")
+        return {"status": "ok", "message": f"Added {name} to the ICP list."}
+    _close_action(resolved, action_id, "rejected")
+    return {"status": "ok", "message": f"Skipped {name}."}
+
+
+def _pending_icp_candidate(db_path: Path, action_id: str) -> sqlite3.Row | None:
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT action_id, action_type, title, payload_json, status
+            FROM pending_actions
+            WHERE action_id = ?
+            """,
+            (action_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or row["status"] != "pending" or row["action_type"] != "icp_candidate":
+        return None
+    return row
+
+
+def _close_action(db_path: Path, action_id: str, status: str) -> None:
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE pending_actions
+                SET status = ?, reviewed_by = 'desk', reviewed_at = ?
+                WHERE action_id = ? AND status = 'pending'
+                """,
+                (status, now, action_id),
+            )
+    finally:
+        conn.close()
 
 
 def _as_int(value: Any, default: int) -> int:
