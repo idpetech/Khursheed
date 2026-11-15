@@ -18,11 +18,14 @@ def resolve_db_path(db_path: str | Path = "khursheed.db") -> Path:
     if str(db_path) == "khursheed.db":
         override = os.getenv("KHURSHEED_DB_PATH", "").strip()
         if override:
-            db_path = override
+            path = Path(override)
+            if not path.is_absolute():
+                path = PROJECT_ROOT / path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return path
     path = Path(db_path)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
-    path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
