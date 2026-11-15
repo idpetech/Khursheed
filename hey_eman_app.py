@@ -19,6 +19,7 @@ from desk_settings import add_icp_company
 from desk_settings import choose_icp_candidate
 from desk_settings import get_int
 from desk_settings import get_setting
+from desk_settings import calendar_enabled
 from desk_settings import icp_enabled
 from desk_settings import morning_run_enabled
 from desk_settings import parse_morning_time
@@ -26,6 +27,14 @@ from desk_settings import list_icp_seed
 from desk_settings import prepare_desk_tasks
 from desk_settings import remove_icp_company
 from desk_settings import set_setting
+from desk_work import add_commitment
+from desk_work import choose_role
+from desk_work import complete_commitment
+from desk_work import decide_skill_request
+from desk_work import is_skill_request
+from desk_work import list_commitments
+from desk_work import list_pursuits
+from desk_work import submit_skill_request
 from chat_memory import load_turns
 from chat_memory import record_turn
 from executive_summary import _format_priority_alerts
@@ -340,6 +349,41 @@ def _open_bills(db_path: str) -> list[dict]:
     return [action for action in pending if action.get("action_type") in BILL_KINDS]
 
 
+def _render_commitments(db_path: str, commitments: list[dict]) -> None:
+    with st.form("add-commitment", clear_on_submit=True):
+        title = st.text_input("What you promised")
+        due_on = st.text_input("Due", placeholder="2026-11-20")
+        if st.form_submit_button("Add commitment") and title.strip():
+            result = add_commitment(db_path, title, due_on)
+            st.session_state.last_ack = result.get("message") or "Saved."
+            st.rerun()
+    for item in commitments:
+        left, right = st.columns([5, 1])
+        due = f" · due {item['due_on']}" if item.get("due_on") else ""
+        left.markdown(f"**{item['title']}**{due}")
+        if right.button("Done", key=f"commit-done-{item['commitment_id']}"):
+            result = complete_commitment(db_path, item["commitment_id"])
+            st.session_state.last_ack = result.get("message") or "Done."
+            st.rerun()
+
+
+def _render_pursuits(manager: Manager, pursuits: list[dict]) -> None:
+    for pursuit in pursuits:
+        st.markdown(f"**{pursuit.get('title') or 'Role'}**")
+        url = str(pursuit.get("url") or "")
+        open_link, draft = st.columns(2)
+        if url:
+            open_link.link_button("Open", url, use_container_width=True)
+        if draft.button("Draft a note", key=f"pursuit-note-{pursuit.get('pursuit_id')}", use_container_width=True):
+            _run_skill_now(
+                manager,
+                "outreach_draft",
+                {"title": pursuit.get("title") or "", "url": url},
+            )
+            st.session_state.last_ack = "Draft is in To review. It has not been sent."
+            st.rerun()
+
+
 def _render_saved_leads(db_path: str, loops: list[dict]) -> None:
     """Show each saved search page with a link and a way to clear it."""
     labels = {"cto_radar": "Fractional CTO search", "icp_prospector": "ICP company"}
@@ -382,6 +426,17 @@ def _render_today(manager: Manager) -> None:
         else:
             st.caption("Inbox is clear — nothing needs a decision right now.")
 
+    commitments = list_commitments(db_path)
+    with st.expander(f"Commitments ({len(commitments)})", expanded=bool(commitments)):
+        st.caption("Promises you made. These are separate from saved search pages.")
+        _render_commitments(db_path, commitments)
+
+    pursuits = list_pursuits(db_path)
+    with st.expander(f"Kept roles ({len(pursuits)})", expanded=bool(pursuits)):
+        if not pursuits:
+            st.caption("Keep a single-employer role from To review and it will show here.")
+        _render_pursuits(manager, pursuits)
+
     with st.expander(f"Saved leads ({len(loops)})", expanded=False):
         if not loops:
             st.caption("No saved leads.")
@@ -420,6 +475,8 @@ def _ensure_research_state(db_path: str) -> None:
         "desk_icp_notes": get_setting(db_path, "icp_notes", ""),
         "desk_run_morning": morning_run_enabled(db_path),
         "desk_morning_time": get_setting(db_path, "morning_run_time", "07:00"),
+        "desk_calendar_enabled": calendar_enabled(db_path),
+        "desk_calendar_url": get_setting(db_path, "calendar_ics_url", ""),
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -443,6 +500,8 @@ def _persist_research(db_path: str) -> None:
     set_setting(db_path, "icp_interval_days", str(int(state.desk_icp_every)))
     set_setting(db_path, "icp_notes", str(state.desk_icp_notes).strip())
     set_setting(db_path, "morning_run_enabled", "1" if state.desk_run_morning else "0")
+    set_setting(db_path, "calendar_enabled", "1" if state.desk_calendar_enabled else "0")
+    set_setting(db_path, "calendar_ics_url", str(state.desk_calendar_url).strip())
     parsed_time = parse_morning_time(str(state.desk_morning_time))
     if parsed_time is None:
         state.last_ack = "Morning time must look like 07:00. Other settings were saved."
@@ -490,7 +549,22 @@ def _render_research(db_path: str) -> None:
             placeholder="US, B2B, no full-time CTO",
         )
         st.checkbox("Run the morning brief automatically", key="desk_run_morning")
+        st.checkbox("Read my calendar in the morning", key="desk_calendar_enabled")
+        st.caption("Off until you turn it on. A failed calendar read does not stop the brief.")
+        st.text_input("Calendar ICS address", key="desk_calendar_url")
         st.text_input("Morning run time (24-hour, this Mac)", key="desk_morning_time")
+        st.markdown("**Ask for a skill**")
+        st.caption("You will see the workflow and the morning line before it is approved.")
+        with st.form("ask-skill", clear_on_submit=True):
+            skill_ask = st.text_area("What should the skill do?", height=80)
+            if st.form_submit_button("Show workflow") and skill_ask.strip():
+                result = submit_skill_request(db_path, skill_ask)
+                st.session_state.last_ack = "Workflow is in To review."
+                st.session_state.skill_preview = result.get("message") or ""
+                st.rerun()
+        preview = st.session_state.get("skill_preview")
+        if preview:
+            st.markdown(preview)
         st.markdown(f"**ICP companies ({len(seed)})**")
         st.caption("A company marked has CTO = yes is skipped. The morning run researches the rest.")
         with st.form("add-icp", clear_on_submit=True):
@@ -568,6 +642,54 @@ def _render_billers(db_path: str) -> None:
 # Rendering: Review queue
 # ---------------------------------------------------------------------------
 
+def _render_role_candidate(db_path: str, action: dict) -> None:
+    payload = _parse_payload(action.get("payload_json"))
+    if action.get("description"):
+        st.markdown(action["description"])
+    url = str(payload.get("url") or "")
+    if url:
+        st.link_button("Open", url)
+    keep, skip = st.columns(2)
+    action_id = action.get("action_id")
+    if keep.button("Keep", key=f"role-keep-{action_id}", use_container_width=True):
+        result = choose_role(db_path, action_id, keep=True)
+        st.session_state.last_ack = result.get("message") or "Kept."
+        st.rerun()
+    if skip.button("Skip", key=f"role-skip-{action_id}", use_container_width=True):
+        result = choose_role(db_path, action_id, keep=False)
+        st.session_state.last_ack = result.get("message") or "Skipped."
+        st.rerun()
+
+
+def _render_outreach_draft(action: dict, db_path: str) -> None:
+    payload = _parse_payload(action.get("payload_json"))
+    st.caption("Keeping this draft does not send it.")
+    st.markdown(payload.get("body") or action.get("description") or "")
+    if st.button("Keep draft", key=f"draft-keep-{action.get('action_id')}"):
+        result = approve_and_execute(db_path, action["action_id"], reviewed_by="desk")
+        st.session_state.last_ack = result.get("message") or "Draft kept."
+        st.rerun()
+
+
+def _render_skill_request(db_path: str, action: dict) -> None:
+    payload = _parse_payload(action.get("payload_json"))
+    workflow = payload.get("workflow") or []
+    if workflow:
+        st.markdown("\n".join(f"{index}. {step}" for index, step in enumerate(workflow, start=1)))
+    st.markdown(f"**Briefing.** {payload.get('briefing') or action.get('description') or ''}")
+    st.caption("Approving adds that line to the morning note. It does not install code or send anything.")
+    approve, decline = st.columns(2)
+    action_id = action.get("action_id")
+    if approve.button("Approve", key=f"skill-yes-{action_id}", use_container_width=True):
+        result = decide_skill_request(db_path, action_id, approve=True)
+        st.session_state.last_ack = result.get("message") or "Approved."
+        st.rerun()
+    if decline.button("Decline", key=f"skill-no-{action_id}", use_container_width=True):
+        result = decide_skill_request(db_path, action_id, approve=False)
+        st.session_state.last_ack = result.get("message") or "Declined."
+        st.rerun()
+
+
 def _render_icp_candidate(db_path: str, action: dict) -> None:
     """Let a suggested company be added to the ICP list or skipped."""
     payload = _parse_payload(action.get("payload_json"))
@@ -620,6 +742,15 @@ def _render_review_queue(manager: Manager) -> None:
                 _render_blog_draft(action)
             elif action_type == "icp_candidate":
                 _render_icp_candidate(db_path, action)
+                continue
+            elif action_type == "role_candidate":
+                _render_role_candidate(db_path, action)
+                continue
+            elif action_type == "outreach_draft":
+                _render_outreach_draft(action, db_path)
+                continue
+            elif action_type == "skill_request":
+                _render_skill_request(db_path, action)
                 continue
             elif action_type in BILL_KINDS:
                 _render_bill_question(db_path, action, "review")
@@ -767,6 +898,11 @@ def _render_runs(manager: Manager) -> None:
 # ---------------------------------------------------------------------------
 
 def _answer(query: str, manager: Manager, agent: HeyEmanAgent) -> str:
+    if is_skill_request(query):
+        result = submit_skill_request(str(manager._db_path), query)
+        answer = result.get("message") or "Say what the skill should do."
+        record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
+        return answer
     if os.getenv("OPENAI_API_KEY"):
         return agent.respond(query, session_id=SESSION_ID)
     answer = _handle_query(query, manager)

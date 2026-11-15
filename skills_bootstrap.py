@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 from skills.base import Skill
 from skills.blogger import BloggerSkill
+from skills.calendar_prep import CalendarPrepSkill
+from skills.outreach_draft import OutreachDraftSkill
 from skills.calculator import CalculatorSkill
 from skills.cto_radar import CtoRadarSkill
 from skills.echo import EchoSkill
@@ -38,6 +40,8 @@ DEFAULT_SKILL_CLASSES: list[type[Skill]] = [
     CtoRadarSkill,
     IcpFinderSkill,
     IcpProspectorSkill,
+    OutreachDraftSkill,
+    CalendarPrepSkill,
     BloggerSkill,
 ]
 

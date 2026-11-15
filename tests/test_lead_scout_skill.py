@@ -67,6 +67,17 @@ class LeadScoutSkillTests(unittest.TestCase):
         genai_leads = [lead for lead in leads if "Generative AI" in lead["tags"]]
         self.assertGreater(len(genai_leads), 0)
 
+    def test_icp_industry_is_tagged_without_dropping_sap(self):
+        skill = FakeLeadScoutSkill()
+        task = {
+            "id": "task-5",
+            "payload": {"queries": ["saas warehouse"], "industries": ["saas", "warehouse"]},
+        }
+        result = skill.run(task)
+        leads = result["queries"][0]["leads"]
+        self.assertTrue(any("SAP EWM" in lead["tags"] for lead in leads))
+        self.assertTrue(any("ICP" in lead["tags"] for lead in leads))
+
     def test_general_relevance_fallback(self):
         skill = FakeLeadScoutSkill()
         task = {

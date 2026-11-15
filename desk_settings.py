@@ -67,6 +67,8 @@ DEFAULTS = {
     "icp_notes": "",
     "morning_run_enabled": "1",
     "morning_run_time": "07:00",
+    "calendar_enabled": "0",
+    "calendar_ics_url": "",
 }
 
 
@@ -199,6 +201,10 @@ def comma_list(db_path: str | Path, key: str) -> list[str]:
     return [part.strip().lower() for part in raw.split(",") if part.strip()]
 
 
+def calendar_enabled(db_path: str | Path) -> bool:
+    return get_setting(db_path, "calendar_enabled", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def icp_enabled(db_path: str | Path) -> bool:
     return get_setting(db_path, "icp_enabled", "0").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -251,6 +257,11 @@ def prepare_desk_tasks(tasks: list[dict[str, Any]], db_path: str | Path) -> list
             queries = query_lines(db_path, "lead_queries")
             if queries:
                 payload["queries"] = queries
+            payload["industries"] = comma_list(db_path, "icp_industries")
+            payload["notes"] = get_setting(db_path, "icp_notes", "")
+            payload["employee_min"] = get_int(db_path, "icp_employee_min", 10, 1, 100000)
+            payload["employee_max"] = get_int(db_path, "icp_employee_max", 50, 1, 100000)
+            payload["funding_stages"] = comma_list(db_path, "icp_funding_stages")
             item["interval_days"] = get_int(db_path, "lead_interval_days", 3, 1, 30)
         if "cto_radar" in skills:
             queries = query_lines(db_path, "cto_queries")
@@ -283,6 +294,15 @@ def prepare_desk_tasks(tasks: list[dict[str, Any]], db_path: str | Path) -> list
                     "payload": payload,
                 }
             )
+    if calendar_enabled(db_path) and not any("calendar_prep" in task["skills"] for task in prepared):
+        prepared.append(
+            {
+                "id": "task-calendar-prep",
+                "skills": ["calendar_prep"],
+                "interval_days": 1,
+                "payload": {"ics_url": get_setting(db_path, "calendar_ics_url", "")},
+            }
+        )
     return prepared
 
 

@@ -1,0 +1,454 @@
+"""Commitments, kept roles, and skill requests the desk can show and clear.
+
+These records sit beside saved search pages. Approving a skill request
+keeps its workflow and briefing. It does not install or run new code, and
+it does not send mail.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+import uuid
+from datetime import UTC
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from runtime import resolve_db_path
+
+
+COMMITMENTS_SQL = """
+CREATE TABLE IF NOT EXISTS commitments (
+    commitment_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    due_on TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+PURSUITS_SQL = """
+CREATE TABLE IF NOT EXISTS pursuits (
+    pursuit_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL DEFAULT '',
+    stage TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+REQUESTS_SQL = """
+CREATE TABLE IF NOT EXISTS skill_requests (
+    request_id TEXT PRIMARY KEY,
+    ask TEXT NOT NULL,
+    skill_name TEXT NOT NULL,
+    workflow_json TEXT NOT NULL,
+    briefing TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+)
+"""
+
+REVIEW_KINDS = ("role_candidate", "outreach_draft", "skill_request", "icp_candidate")
+
+_DIRECTORY_WORDS = (
+    "jobs",
+    "now hiring",
+    "hiring now",
+    "for hire",
+    "hire a",
+    "ctos in",
+    "best freelance",
+)
+_BOARD_HOSTS = (
+    "indeed.com",
+    "ziprecruiter.com",
+    "glassdoor.",
+    "ctodirectory.com",
+    "gofractional.com",
+    "recruitfractional.com",
+    "arc.dev",
+)
+
+
+def ensure_desk_work(db_path: str | Path) -> Path:
+    resolved = resolve_db_path(db_path)
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(COMMITMENTS_SQL)
+            conn.execute(PURSUITS_SQL)
+            conn.execute(REQUESTS_SQL)
+    finally:
+        conn.close()
+    return resolved
+
+
+def add_commitment(db_path: str | Path, title: str, due_on: str = "") -> dict[str, Any]:
+    text = (title or "").strip()
+    if not text:
+        return {"status": "error", "message": "Enter what you promised."}
+    resolved = ensure_desk_work(db_path)
+    now = datetime.now(UTC).isoformat()
+    commitment_id = str(uuid.uuid4())
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO commitments (
+                    commitment_id, title, due_on, status, created_at, updated_at
+                ) VALUES (?, ?, ?, 'open', ?, ?)
+                """,
+                (commitment_id, text, (due_on or "").strip(), now, now),
+            )
+    finally:
+        conn.close()
+    return {"status": "ok", "message": "Commitment saved.", "commitment_id": commitment_id}
+
+
+def list_commitments(db_path: str | Path) -> list[dict[str, Any]]:
+    resolved = ensure_desk_work(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT commitment_id, title, due_on, status, created_at
+            FROM commitments
+            WHERE status = 'open'
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def complete_commitment(db_path: str | Path, commitment_id: str) -> dict[str, Any]:
+    resolved = ensure_desk_work(db_path)
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE commitments
+                SET status = 'done', updated_at = ?
+                WHERE commitment_id = ? AND status = 'open'
+                """,
+                (now, commitment_id),
+            )
+            done = cursor.rowcount > 0
+    finally:
+        conn.close()
+    if not done:
+        return {"status": "error", "message": "That commitment is already done."}
+    return {"status": "ok", "message": "Marked done."}
+
+
+def is_single_role(title: str, url: str) -> bool:
+    """True for one employer posting. Directory and job-board pages are false."""
+    text = f"{title} {url}".lower()
+    host = urlparse(url).netloc.lower()
+    if any(board in host or board in text for board in _BOARD_HOSTS):
+        return False
+    if re.search(r"\b\d+\+?\s+\w+", title.lower()):
+        return False
+    if any(word in title.lower() for word in _DIRECTORY_WORDS):
+        return False
+    return bool(title.strip() and url.strip())
+
+
+def queue_single_roles(opportunities: list[dict[str, Any]], db_path: str | Path) -> int:
+    """Offer one-employer roles for Keep or Skip. Board pages stay in saved leads."""
+    from priority_inbox import emit_priority_action
+
+    offered = 0
+    for opportunity in opportunities:
+        title = str(opportunity.get("title") or "").strip()
+        url = str(opportunity.get("url") or "").strip()
+        if not is_single_role(title, url):
+            continue
+        emit_priority_action(
+            kind="role_candidate",
+            title=title,
+            description=str(opportunity.get("snippet") or "One employer is hiring."),
+            payload={"title": title, "url": url, "snippet": opportunity.get("snippet") or ""},
+            priority=1,
+            source_key=f"role:{url}",
+            db_path=str(db_path),
+        )
+        offered += 1
+    return offered
+
+
+def choose_role(db_path: str | Path, action_id: str, keep: bool) -> dict[str, Any]:
+    action = _pending(db_path, action_id, "role_candidate")
+    if action is None:
+        return {"status": "error", "message": "That role is no longer waiting."}
+    payload = json.loads(action["payload_json"] or "{}")
+    title = str(payload.get("title") or action["title"] or "Role").strip()
+    if keep:
+        _insert_pursuit(db_path, title, str(payload.get("url") or ""))
+        _close(db_path, action_id, "acknowledged")
+        return {"status": "ok", "message": f"Kept {title}."}
+    _close(db_path, action_id, "rejected")
+    return {"status": "ok", "message": f"Skipped {title}."}
+
+
+def list_pursuits(db_path: str | Path) -> list[dict[str, Any]]:
+    resolved = ensure_desk_work(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT pursuit_id, title, url, stage, created_at
+            FROM pursuits
+            WHERE stage = 'kept'
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def propose_skill(ask: str) -> dict[str, Any]:
+    """Turn a request into a visible workflow and a morning-brief line."""
+    text = " ".join((ask or "").split())
+    if not text:
+        return {"status": "error", "message": "Say what the skill should do."}
+    name = _skill_name(text)
+    workflow = [
+        "Read this request and the principal profile.",
+        "Do only the work described below, and stop before sending anything.",
+        "Put the result in To review.",
+        "After approval, add the briefing line to the morning note.",
+        text,
+    ]
+    lowered = text.lower()
+    if "calendar" in lowered or "meeting" in lowered:
+        workflow.insert(1, "Read the calendar only when Calendar prep is on in Config.")
+    if "email" in lowered or "outreach" in lowered or "note" in lowered:
+        workflow.insert(1, "Write the note. Leave it in To review. Do not send it.")
+    briefing = f"You asked for a skill to {text[:180].rstrip('.')}."
+    return {
+        "status": "ok",
+        "skill_name": name,
+        "ask": text,
+        "workflow": workflow,
+        "briefing": briefing,
+    }
+
+
+def submit_skill_request(db_path: str | Path, ask: str) -> dict[str, Any]:
+    """Save the proposal and put the workflow and briefing in To review."""
+    proposal = propose_skill(ask)
+    if proposal.get("status") != "ok":
+        return proposal
+    resolved = ensure_desk_work(db_path)
+    now = datetime.now(UTC).isoformat()
+    request_id = str(uuid.uuid4())
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO skill_requests (
+                    request_id, ask, skill_name, workflow_json, briefing, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?)
+                """,
+                (
+                    request_id,
+                    proposal["ask"],
+                    proposal["skill_name"],
+                    json.dumps(proposal["workflow"]),
+                    proposal["briefing"],
+                    now,
+                    now,
+                ),
+            )
+    finally:
+        conn.close()
+    from priority_inbox import emit_priority_action
+
+    emit_priority_action(
+        kind="skill_request",
+        title=proposal["skill_name"],
+        description=proposal["briefing"],
+        payload={**proposal, "request_id": request_id},
+        priority=1,
+        source_key=f"skill-request:{request_id}",
+        db_path=str(resolved),
+    )
+    workflow = "\n".join(f"{index}. {step}" for index, step in enumerate(proposal["workflow"], start=1))
+    message = (
+        f"### Workflow\n{workflow}\n\n"
+        f"### Briefing\n{proposal['briefing']}\n\n"
+        "It is waiting in To review. Approve it there to add the briefing to the morning note. "
+        "Approving does not install code and does not send anything."
+    )
+    return {"status": "ok", "message": message, "request_id": request_id, **proposal}
+
+
+def decide_skill_request(db_path: str | Path, action_id: str, approve: bool) -> dict[str, Any]:
+    action = _pending(db_path, action_id, "skill_request")
+    if action is None:
+        return {"status": "error", "message": "That skill request is no longer waiting."}
+    payload = json.loads(action["payload_json"] or "{}")
+    request_id = str(payload.get("request_id") or "")
+    status = "approved" if approve else "declined"
+    _set_request_status(db_path, request_id, status)
+    _close(db_path, action_id, "acknowledged" if approve else "rejected")
+    if approve:
+        return {"status": "ok", "message": "Approved. The briefing will be in the morning note."}
+    return {"status": "ok", "message": "Declined."}
+
+
+def approved_skill_briefings(db_path: str | Path) -> list[str]:
+    resolved = ensure_desk_work(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        rows = conn.execute(
+            """
+            SELECT briefing FROM skill_requests
+            WHERE status = 'approved'
+            ORDER BY created_at ASC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+    return [str(row[0]) for row in rows if row[0]]
+
+
+def list_skill_requests(db_path: str | Path) -> list[dict[str, Any]]:
+    resolved = ensure_desk_work(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT request_id, ask, skill_name, workflow_json, briefing, status
+            FROM skill_requests
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["workflow"] = json.loads(item.pop("workflow_json") or "[]")
+        except json.JSONDecodeError:
+            item["workflow"] = []
+        items.append(item)
+    return items
+
+
+def is_skill_request(query: str) -> bool:
+    text = (query or "").strip().lower()
+    return text.startswith("skill:") or "new skill" in text
+
+
+def outreach_body(title: str, url: str = "") -> str:
+    """A note the desk can hold. Nothing in this text is sent."""
+    link = f"\n{url}\n" if url else "\n"
+    return (
+        f"Hello,\n\n"
+        f"I help seed to series B software companies that still need a CTO. "
+        f"I saw {title}.{link}\n"
+        "If a fractional CTO would be useful for the next stage, I can talk for 20 minutes this week.\n\n"
+        "Haseeb"
+    )
+
+
+def _insert_pursuit(db_path: str | Path, title: str, url: str) -> None:
+    resolved = ensure_desk_work(db_path)
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            existing = conn.execute("SELECT pursuit_id FROM pursuits WHERE url = ? AND url != ''", (url,)).fetchone()
+            if existing:
+                return
+            conn.execute(
+                """
+                INSERT INTO pursuits (pursuit_id, title, url, stage, created_at, updated_at)
+                VALUES (?, ?, ?, 'kept', ?, ?)
+                """,
+                (str(uuid.uuid4()), title, url, now, now),
+            )
+    finally:
+        conn.close()
+
+
+def _set_request_status(db_path: str | Path, request_id: str, status: str) -> None:
+    resolved = ensure_desk_work(db_path)
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE skill_requests SET status = ?, updated_at = ? WHERE request_id = ?
+                """,
+                (status, now, request_id),
+            )
+    finally:
+        conn.close()
+
+
+def _pending(db_path: str | Path, action_id: str, kind: str) -> sqlite3.Row | None:
+    resolved = resolve_db_path(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT action_id, action_type, title, payload_json, status
+            FROM pending_actions
+            WHERE action_id = ?
+            """,
+            (action_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or row["status"] != "pending" or row["action_type"] != kind:
+        return None
+    return row
+
+
+def _close(db_path: str | Path, action_id: str, status: str) -> None:
+    resolved = resolve_db_path(db_path)
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(
+                """
+                UPDATE pending_actions
+                SET status = ?, reviewed_by = 'desk', reviewed_at = ?
+                WHERE action_id = ? AND status = 'pending'
+                """,
+                (status, now, action_id),
+            )
+    finally:
+        conn.close()
+
+
+def _skill_name(text: str) -> str:
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    slug = "-".join(words[:4]) or "custom-skill"
+    return slug[:40]

@@ -25,18 +25,18 @@ class LeadScoutSkill(Skill):
         )
         results: List[Dict[str, Any]] = []
         for query in queries:
-            leads = self._search_and_score(query)
+            leads = self._search_and_score(query, payload)
             results.append({"query": query, "leads": leads})
         return {"queries": results}
 
-    def _search_and_score(self, query: str) -> List[Dict[str, Any]]:
+    def _search_and_score(self, query: str, payload: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
         data = self._tavily_search(query, max_results=8)
         leads: List[Dict[str, Any]] = []
         for item in data.get("results", []):
             title = item.get("title") or "Unknown"
             url = item.get("url") or ""
             snippet = item.get("content") or item.get("title") or ""
-            score, tags = self._score_relevance(title, snippet)
+            score, tags = self._score_relevance(title, snippet, payload)
             leads.append(
                 {
                     "title": title,
@@ -48,7 +48,12 @@ class LeadScoutSkill(Skill):
             )
         return sorted(leads, key=lambda lead: lead["score"], reverse=True)[:5]
 
-    def _score_relevance(self, title: str, snippet: str) -> tuple[int, List[str]]:
+    def _score_relevance(
+        self,
+        title: str,
+        snippet: str,
+        payload: Dict[str, Any] | None = None,
+    ) -> tuple[int, List[str]]:
         text = f"{title} {snippet}".lower()
         score = 0
         tags: List[str] = []
@@ -62,6 +67,23 @@ class LeadScoutSkill(Skill):
         if any(keyword in text for keyword in genai_keywords):
             score += 40
             tags.append("Generative AI")
+        criteria = payload or {}
+        industries = [str(item).strip().lower() for item in criteria.get("industries") or [] if str(item).strip()]
+        if any(industry in text for industry in industries):
+            score += 50
+            tags.append("ICP")
+        notes = str(criteria.get("notes") or "")
+        phrases = [
+            part.strip().lower()
+            for part in notes.replace(";", ",").split(",")
+            if len(part.strip()) >= 3
+        ]
+        if any(phrase in text for phrase in phrases):
+            score += 20
+            tags.append("Notes")
+        if "fractional" in text and "cto" in text:
+            score += 30
+            tags.append("Fractional CTO")
         if not tags:
             score += 10
             tags.append("General relevance")

@@ -90,6 +90,7 @@ def generate_executive_summary(
             "## Recommended Actions",
             _format_recommendations(recommendations),
             "",
+            *_extra_sections(db_path, runs),
         ]
     )
     notifier.send(report)
@@ -110,6 +111,14 @@ def mobile_update(report: str) -> str:
     parts.extend(_mobile_lines("Leads", sections.get("Top Leads"), "No new leads."))
     parts.extend(_mobile_lines("CTO", sections.get("Fractional CTO Opportunities"), "No new CTO roles."))
     parts.extend(_mobile_lines("ICP", sections.get("Top ICP Companies"), "No ICP companies."))
+    for label, heading in (
+        ("Post", "This week"),
+        ("Meeting", "Next meeting"),
+        ("Skills", "Skills you asked for"),
+    ):
+        body = sections.get(heading)
+        if body:
+            parts.extend(_mobile_lines(label, body, ""))
     nxt = _mobile_next(sections.get("Recommended Actions", ""))
     if nxt:
         parts.extend(["", f"Next: {nxt}"])
@@ -208,7 +217,14 @@ def _highest_other_priority_action(db_path: str) -> Dict[str, Any] | None:
     candidates = [
         action
         for action in actions
-        if action.get("action_type") not in {"linkedin_post_draft", *priority_inbox.BILL_KINDS}
+        if action.get("action_type") not in {
+            "linkedin_post_draft",
+            "role_candidate",
+            "outreach_draft",
+            "skill_request",
+            "icp_candidate",
+            *priority_inbox.BILL_KINDS,
+        }
     ]
     if not candidates:
         return None
@@ -431,6 +447,51 @@ def _format_cto_opportunities(
             f"- {opp.get('title')} ({location}, {work_mode}; {tags}) - {opp.get('url')}"
         )
     return "\n".join(lines)
+
+
+def _extra_sections(db_path: str, runs: List[Dict[str, Any]]) -> List[str]:
+    """Lines that can be absent. A missing calendar or draft must not break the brief."""
+    sections: List[str] = []
+    if not _linkedin_ready(db_path, runs):
+        sections.extend(["## This week", "_No LinkedIn draft yet this week._", ""])
+    meetings = _meetings_from_runs(runs)
+    if meetings:
+        lines = [f"- {item.get('summary', 'Meeting')} at {item.get('start', '')}" for item in meetings]
+        sections.extend(["## Next meeting", "\n".join(lines), ""])
+    try:
+        from desk_work import approved_skill_briefings
+
+        briefings = approved_skill_briefings(db_path)
+    except Exception:  # noqa: BLE001
+        briefings = []
+    if briefings:
+        sections.extend(["## Skills you asked for", "\n".join(f"- {line}" for line in briefings), ""])
+    return sections
+
+
+def _linkedin_ready(db_path: str, runs: List[Dict[str, Any]]) -> bool:
+    if any(run.get("skill_name") == "blogger" for run in runs):
+        return True
+    try:
+        import priority_inbox
+
+        actions = priority_inbox.list_open_priority_actions(min_priority=0, db_path=db_path)
+    except Exception:  # noqa: BLE001
+        return False
+    return any(action.get("action_type") == "linkedin_post_draft" for action in actions)
+
+
+def _meetings_from_runs(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    meetings: List[Dict[str, Any]] = []
+    for run in runs:
+        if run.get("skill_name") != "calendar_prep":
+            continue
+        try:
+            payload = json.loads(run.get("result_json") or "{}")
+        except (ValueError, TypeError):
+            continue
+        meetings.extend(payload.get("meetings") or [])
+    return meetings[:3]
 
 
 def _waiting_icp_choices(db_path: str) -> int:

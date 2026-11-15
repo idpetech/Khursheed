@@ -68,6 +68,12 @@ class CtoRadarSkill(Skill):
                 )
             except Exception as loop_error:
                 logger.warning("CTO radar could not write open loops: %s", loop_error)
+            try:
+                from desk_work import queue_single_roles
+
+                queue_single_roles(top_opportunities, task.get("db_path", "khursheed.db"))
+            except Exception as role_error:
+                logger.warning("CTO radar could not offer single roles: %s", role_error)
 
             result = {
                 "opportunities": top_opportunities,
