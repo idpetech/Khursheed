@@ -2,14 +2,20 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# Persist this directory with a Railway volume. The file is not in the image.
+# The database is not in the image. Attach a Railway volume at /data.
+# TZ is the clock for the morning brief. Override it in the service variables.
 ENV PYTHONUNBUFFERED=1
 ENV KHURSHEED_DB_PATH=/data/khursheed.db
+ENV TZ=America/New_York
 
 EXPOSE 8080
 

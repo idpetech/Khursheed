@@ -22,7 +22,15 @@ def resolve_db_path(db_path: str | Path = "khursheed.db") -> Path:
     path = Path(db_path)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
+    path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def brief_path() -> Path:
+    """Morning note. On a volume it sits beside the database so a deploy keeps it."""
+    if os.getenv("KHURSHEED_DB_PATH", "").strip():
+        return resolve_db_path().parent / "executive_summary.md"
+    return PROJECT_ROOT / "executive_summary.md"
 
 
 def prepare_runtime(db_path: str | Path = "khursheed.db") -> int:

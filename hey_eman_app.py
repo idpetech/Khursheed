@@ -50,6 +50,7 @@ from priority_inbox import BILL_KINDS
 from priority_inbox import list_open_priority_actions
 from priority_inbox import refresh_open_bill_priorities
 from runtime import PROJECT_ROOT
+from runtime import brief_path
 from runtime import prepare_runtime
 from schedule_sync import run_morning_skills
 from skills_bootstrap import register_default_skills
@@ -265,8 +266,8 @@ def _require_password() -> None:
 # Data helpers
 # ---------------------------------------------------------------------------
 
-def _recent_runs(manager: Manager, limit: int = 8) -> list[tuple]:
-    since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+def _recent_runs(manager: Manager, limit: int = 100, days: int = 30) -> list[tuple]:
+    since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     cursor = manager._connection.execute(
         """
         SELECT skill_name, task_id, executed_at, status
@@ -883,14 +884,17 @@ def _render_theme_queue(manager: Manager) -> None:
 # ---------------------------------------------------------------------------
 
 def _render_runs(manager: Manager) -> None:
+    """Skill runs live here. The morning brief does not list them."""
     rows = _recent_runs(manager)
-    with st.expander(f"Recent skill runs ({len(rows)})", expanded=bool(rows)):
-        if not rows:
-            st.caption("No skill runs in the last 7 days.")
-            return
-        for skill_name, task_id, executed_at, status in rows:
-            st.markdown(f"`{skill_name}` · {status} · {executed_at}")
-            st.caption(task_id)
+    st.caption("Each line is one skill run from the last 30 days.")
+    if not rows:
+        st.caption("No skill runs in the last 30 days.")
+        return
+    for skill_name, task_id, executed_at, status in rows:
+        line = f"`{skill_name}` for `{task_id}` at {executed_at}"
+        if status and status != "completed":
+            line = f"{line} ({status})"
+        st.markdown(line)
 
 
 # ---------------------------------------------------------------------------
@@ -997,7 +1001,7 @@ def _run_skill_now(manager: Manager, skill_name: str, payload: dict | None = Non
 
 
 def _brief_notifier():
-    return daily_brief_notifier(str(PROJECT_ROOT / "executive_summary.md"))
+    return daily_brief_notifier(str(brief_path()))
 
 
 def _handle_query(query: str, manager: Manager) -> str:
@@ -1075,6 +1079,9 @@ def main() -> None:
             pass
 
     prepare_runtime()
+    from morning_watch import start_if_railway
+
+    start_if_railway()
     manager = Manager()
     register_default_skills(manager)
     agent = HeyEmanAgent(manager)
@@ -1087,13 +1094,13 @@ def main() -> None:
         if st.session_state.get("config_open"):
             _render_research(str(manager._db_path))
 
-    brief_path = PROJECT_ROOT / "executive_summary.md"
-    if "brief" not in st.session_state and brief_path.exists():
-        st.session_state.brief = brief_path.read_text(encoding="utf-8")
+    saved_brief = brief_path()
+    if "brief" not in st.session_state and saved_brief.exists():
+        st.session_state.brief = saved_brief.read_text(encoding="utf-8")
 
     _render_header(manager)
 
-    tabs = st.tabs(["Ask Enaam", "Today", "To review", "Content", "Activity"])
+    tabs = st.tabs(["Ask Enaam", "Today", "To review", "Content", "Task log"])
     with tabs[0]:
         _render_conversation(manager, agent)
     with tabs[1]:

@@ -35,7 +35,6 @@ def generate_executive_summary(
     runs = manager.get_runs_since(since)
     window = _window_phrase(lookback_days)
 
-    tasks_section = _format_tasks(runs, lookback_days)
     pending_bills = _format_desk_bills(_desk_bills(db_path))
     leads = _extract_top_leads(runs, limit=3)
     priority_alerts = _extract_priority_alerts(min_priority=2, db_path=db_path)
@@ -66,9 +65,6 @@ def generate_executive_summary(
             "",
             "## Priority Alerts",
             _format_priority_alerts(priority_alerts),
-            "",
-            "## Tasks Completed",
-            tasks_section,
             "",
             "## Pending Bills",
             pending_bills,

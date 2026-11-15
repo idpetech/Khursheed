@@ -114,6 +114,13 @@ class BillerTests(unittest.TestCase):
             target = str(Path(tmpdir) / "desk.db")
             with patch.dict(os.environ, {"KHURSHEED_DB_PATH": target}):
                 self.assertEqual(resolve_db_path("khursheed.db"), Path(target))
+            nested = str(Path(tmpdir) / "volume" / "khursheed.db")
+            with patch.dict(os.environ, {"KHURSHEED_DB_PATH": nested}):
+                from runtime import brief_path
+
+                resolved = resolve_db_path("khursheed.db")
+                self.assertTrue(resolved.parent.is_dir())
+                self.assertEqual(brief_path(), resolved.parent / "executive_summary.md")
             self.assertTrue(str(resolve_db_path("other.db")).endswith("other.db"))
 
 

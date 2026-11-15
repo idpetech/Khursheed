@@ -1,6 +1,7 @@
 # Secrets belong in Railway service variables, not in this file.
-# Attach a volume mounted at /data so khursheed.db survives deploys.
-# The image sets KHURSHEED_DB_PATH=/data/khursheed.db.
+# Railway does not create volumes from this file. In the service, add a volume
+# mounted at /data. The image stores khursheed.db and the last brief there.
+# Set TZ if the morning brief should use a clock other than America/New_York.
 
 [build]
 builder = "DOCKERFILE"

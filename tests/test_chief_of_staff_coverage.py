@@ -443,6 +443,7 @@ class SummaryCoverageTests(unittest.TestCase):
         empty = generate_executive_summary(Manager(db_path=str(Path(tmp.name) / "empty.db")), RecordingNotifier())
         self.assertIn("_No open loops._", empty)
         self.assertIn("_No open priority alerts._", empty)
+        self.assertNotIn("## Tasks Completed", empty)
 
 
 class AgentCoverageTests(unittest.TestCase):
