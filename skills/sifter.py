@@ -14,6 +14,7 @@ import imaplib
 from datetime import datetime, timedelta, timezone
 
 from skills.base import Skill
+from runtime import resolve_db_path
 
 logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -38,20 +39,23 @@ class SifterSkill(Skill):
 
     def run(self, task: Dict[str, Any]) -> Dict[str, Any]:
         max_messages = int(task.get("payload", {}).get("max_messages", 50))
+        lookback_days = self._lookback_days(task)
         results: List[Dict[str, Any]] = []
         expenses = self._load_expenses()
         priority_actions: List[Dict[str, Any]] = []
         # Bills already saved are re-ranked from their due date. This does not
-        # open a mailbox, so the IMAP window can stay at two days.
+        # open a mailbox, so it ignores the mail lookback setting.
         try:
             from priority_inbox import refresh_open_bill_priorities
 
-            refresh_open_bill_priorities(str(_PROJECT_ROOT / "khursheed.db"))
+            refresh_open_bill_priorities(str(resolve_db_path("khursheed.db")))
         except Exception as exc:
             logger.warning("Could not refresh stored bill priorities: %s", exc)
 
         for account in self._accounts:
-            categorized, account_priority_actions = self._process_account(account, max_messages)
+            categorized, account_priority_actions = self._process_account(
+                account, max_messages, lookback_days
+            )
             results.append({"account": account.name, "categorized": categorized})
             priority_actions.extend(account_priority_actions)
             for entry in categorized:
@@ -61,10 +65,31 @@ class SifterSkill(Skill):
         self._save_expenses(expenses)
         return {"accounts": results, "expense_count": len(expenses), "priority_actions": priority_actions}
 
-    def _process_account(self, account: MailAccount, max_messages: int) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    def _lookback_days(self, task: Dict[str, Any]) -> int:
+        raw = task.get("payload", {}).get("lookback_days")
+        if raw is None:
+            try:
+                from desk_settings import mail_lookback_days
+
+                return mail_lookback_days(resolve_db_path("khursheed.db"))
+            except Exception as exc:
+                logger.warning("Mail lookback setting unavailable: %s", exc)
+                return 2
+        try:
+            days = int(raw)
+        except (TypeError, ValueError):
+            days = 2
+        return max(1, min(days, 30))
+
+    def _process_account(
+        self,
+        account: MailAccount,
+        max_messages: int,
+        lookback_days: int,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         categorized: List[Dict[str, Any]] = []
         priority_actions: List[Dict[str, Any]] = []
-        since_date = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%d-%b-%Y")
+        since_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%d-%b-%Y")
         
         try:
             with imaplib.IMAP4_SSL(account.host) as imap:
@@ -89,7 +114,13 @@ class SifterSkill(Skill):
                         # Add financial detection (new layer on top)
                         message_id = msg.get("Message-ID", f"unknown-{msg_id.decode()}")
                         financial_detection = self._detect_financial_urgency(
-                            subject, sender, body, message_id, account.name, sent_at
+                            subject,
+                            sender,
+                            body,
+                            message_id,
+                            account.name,
+                            sent_at,
+                            account.username,
                         )
                         if financial_detection:
                             priority_actions.append(financial_detection)
@@ -271,19 +302,40 @@ class SifterSkill(Skill):
         message_id: str,
         account_name: str,
         sent_at: str = "",
+        account_email: str = "",
     ) -> Optional[Dict[str, Any]]:
         """
         Detect financial urgency in email and escalate to priority_inbox.
         Returns priority action info if escalation was created, None otherwise.
         """
         try:
-            # Stage 1: Keyword prefilter (cheap)
-            financial_kind = self._financial_keyword_prefilter(subject, sender, body)
-            if not financial_kind:
+            # Learned / seeded false positives (Not a bill on the desk).
+            try:
+                from bill_feedback import is_bill_suppressed
+
+                if is_bill_suppressed(resolve_db_path("khursheed.db"), sender, subject):
+                    logger.info(
+                        "Skipping suppressed non-bill mail from %s subject=%r",
+                        sender,
+                        subject[:80],
+                    )
+                    return None
+            except Exception as exc:  # pylint: disable=broad-except
+                logger.warning("Bill suppression check failed: %s", exc)
+
+            # Stage 1: a watched biller is always read. Everyone else needs a keyword.
+            candidate_kind = self._candidate_kind(subject, sender, body)
+            if not candidate_kind:
                 return None
 
             # Stage 2: OpenAI extraction (expensive, only for candidates)
-            extraction = self._extract_financial_details(subject, sender, body, financial_kind)
+            extraction = self._extract_financial_details(
+                subject,
+                sender,
+                body,
+                candidate_kind,
+                self._biller_note(sender),
+            )
             
             if extraction.get("kind") in (None, "none"):
                 return None
@@ -298,7 +350,15 @@ class SifterSkill(Skill):
             
             # Create priority action
             action_id = self._create_priority_action(
-                extraction, subject, sender, message_id, account_name, priority, expires_at, sent_at
+                extraction,
+                subject,
+                sender,
+                message_id,
+                account_name,
+                priority,
+                expires_at,
+                sent_at,
+                account_email,
             )
             
             return {
@@ -311,16 +371,54 @@ class SifterSkill(Skill):
             logger.warning(f"Error in financial urgency detection for message {message_id}: {e}")
             return None
 
+    def _candidate_kind(self, subject: str, sender: str, body: str) -> Optional[str]:
+        """Watched billers skip the keyword gate. Other mail still has to match a phrase."""
+        try:
+            from billers import watched_candidate_kind
+
+            watched = watched_candidate_kind(resolve_db_path("khursheed.db"), sender)
+            if watched:
+                return watched
+        except Exception as exc:
+            logger.warning("Biller list check failed: %s", exc)
+        return self._financial_keyword_prefilter(subject, sender, body)
+
+    def _biller_note(self, sender: str) -> str:
+        try:
+            from billers import find_biller
+
+            row = find_biller(resolve_db_path("khursheed.db"), sender)
+        except Exception:
+            return ""
+        if not row:
+            return ""
+        label = row["kind"].replace("_", " ")
+        return f"{row['display_name']} ({row['domain']}, {label})"
+
     def _financial_keyword_prefilter(self, subject: str, sender: str, body: str) -> Optional[str]:
         """Stage 1: Cheap keyword-based prefiltering"""
         text = f"{subject} {sender} {body}".lower()
-        
-        # new_bill keywords
+        sender_l = (sender or "").lower()
+
+        # new_bill keywords — avoid bare "bill"/"tax" which fire on newsletters.
         new_bill_keywords = [
-            "invoice", "statement available", "amount due", "payment due", "bill", 
-            "your invoice", "new statement", "billing statement"
+            "invoice",
+            "statement available",
+            "amount due",
+            "payment due",
+            "your invoice",
+            "new statement",
+            "billing statement",
+            "your bill",
+            "bill is due",
+            "pay your bill",
+            "pay this bill",
+            "bill amount",
+            "ebill",
+            "e-bill",
+            "please pay",
         ]
-        
+
         # overdue_payment keywords
         overdue_keywords = [
             "past due", "overdue", "payment failed",
@@ -329,14 +427,41 @@ class SifterSkill(Skill):
         # These phrases also appear in sales mail ("final notice: 30% off").
         overdue_with_payment = ["final notice", "second notice"]
         promo_markers = ["% off", "discount", "coupon", "promo", "ends at midnight"]
-        payment_markers = ["invoice", "past due", "amount due", "payment due", "payment failed", "bill"]
-        
+        payment_markers = [
+            "invoice",
+            "past due",
+            "amount due",
+            "payment due",
+            "payment failed",
+            "your bill",
+            "bill is due",
+            "pay your bill",
+        ]
+        strong_payment_markers = [
+            "invoice",
+            "amount due",
+            "payment due",
+            "payment failed",
+            "receipt for your payment",
+            "your bill is ready",
+        ]
+
         # trial_ending keywords
         trial_keywords = [
             "trial ends", "trial expires", "free trial expires", "cancel before", "will be charged on",
             "auto-renew on", "subscription renewal", "trial expiring", "trial period ends"
         ]
-        
+
+        # Newsletters / digests are almost never personal invoices unless strong
+        # payment language is present.
+        newsletter_sender = bool(
+            re.search(r"\b(newsletter|digest|news|updates)@", sender_l)
+            or "newsletter@" in sender_l
+            or "aisecret" in sender_l
+        )
+        if newsletter_sender and not any(marker in text for marker in strong_payment_markers):
+            return None
+
         # A discount email is not a bill, even when the subject says "final notice".
         if any(marker in text for marker in promo_markers) and not any(
             marker in text for marker in payment_markers
@@ -353,7 +478,7 @@ class SifterSkill(Skill):
             return "overdue_payment"
         elif any(keyword in text for keyword in new_bill_keywords):
             return "new_bill"
-            
+
         return None
 
     @staticmethod
@@ -368,7 +493,14 @@ class SifterSkill(Skill):
             text = text[start:end + 1]
         return json.loads(text)
 
-    def _extract_financial_details(self, subject: str, sender: str, body: str, candidate_kind: str) -> Dict[str, Any]:
+    def _extract_financial_details(
+        self,
+        subject: str,
+        sender: str,
+        body: str,
+        candidate_kind: str,
+        biller_note: str = "",
+    ) -> Dict[str, Any]:
         """Stage 2: OpenAI extraction or fallback to keyword-only"""
         try:
             # Check if OpenAI is available
@@ -381,23 +513,42 @@ class SifterSkill(Skill):
             client = openai.OpenAI(api_key=openai_key)
             
             prompt = f"""
-            Analyze this email for financial urgency and extract details in strict JSON format.
-            
-            Subject: {subject}
-            From: {sender}
-            Body: {body[:2000]}  # Truncate for API limits
-            
-            Extract these fields in JSON:
-            - kind: one of "new_bill", "overdue_payment", "trial_ending", or "none"
-            - vendor: company/service name
-            - amount: numeric amount if found
-            - currency: currency code (USD, EUR, etc) or null
-            - due_date: YYYY-MM-DD format if found, or null
-            - confidence: "high", "medium", or "low"
-            - action_required: brief description of what action is needed
-            
-            Return ONLY valid JSON, no other text.
+Analyze this email and decide if the recipient must pay or will be auto-charged.
+
+Subject: {subject}
+From: {sender}
+Body: {body[:2000]}
+
+Return ONLY valid JSON with:
+- kind: one of "new_bill", "overdue_payment", "trial_ending", or "none"
+- vendor: company/service the recipient owes, or null
+- amount: numeric amount owed by the recipient, or null
+- currency: currency code (USD, EUR, etc) or null
+- due_date: YYYY-MM-DD if the recipient has a due date, else null
+- confidence: "high", "medium", or "low"
+- action_required: brief description, or null when kind is "none"
+
+Rules:
+- Use kind "none" for newsletters, news digests, opinion/policy articles, marketing,
+  education, or general discussion of taxes/bills/invoices/prices that do NOT ask
+  this recipient to pay a specific personal charge.
+- Example that must be "none": a newsletter titled about Europe taxes from a
+  publisher (e.g. AI Secret) that mentions EUR amounts in the article.
+- Only use new_bill / overdue_payment / trial_ending when the recipient is asked
+  to pay for a product/service they use, or a trial/subscription will charge them.
+- Never invent vendor, amount, currency, or due_date. If unsure, kind="none".
+- Newsletter senders (newsletter@, news@, digests) are "none" unless the body
+  clearly contains a personal invoice or payment request for this recipient.
             """
+            if biller_note:
+                prompt += f"""
+
+This sender is on the user's biller list: {biller_note}.
+Still return kind "none" for security alerts, marketing, shipping notices, and
+payments the recipient sent to someone else.
+Do keep a personal invoice, a card or utility statement, a subscription receipt,
+or a renewal that charges this recipient.
+"""
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -483,6 +634,7 @@ class SifterSkill(Skill):
         self, extraction: Dict[str, Any], subject: str, sender: str,
         message_id: str, account_name: str, priority: int, expires_at: Optional[str],
         sent_at: str = "",
+        account_email: str = "",
     ) -> str:
         """Create priority action using priority_inbox"""
         try:
@@ -514,6 +666,7 @@ class SifterSkill(Skill):
                     "subject": subject,
                     "from": sender,
                     "sent_at": sent_at,
+                    "account_email": account_email,
                 },
                 priority=priority,
                 source_key=source_key,

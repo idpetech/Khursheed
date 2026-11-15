@@ -1,8 +1,9 @@
 from dotenv import load_dotenv
 
+from desk_settings import prepare_desk_tasks
 from executive_summary import generate_executive_summary
 from manager import Manager
-from notifications import MarkdownFileNotifier
+from notifications import daily_brief_notifier
 from runtime import prepare_runtime
 from skills_bootstrap import register_default_skills
 
@@ -12,9 +13,9 @@ def main() -> None:
     prepare_runtime()
     manager = Manager()
     register_default_skills(manager)
-    tasks = manager.load_tasks("tasks.json")
+    tasks = prepare_desk_tasks(manager.load_tasks("tasks.json"), manager._db_path)
     manager.run_tasks(tasks)
-    generate_executive_summary(manager, MarkdownFileNotifier())
+    generate_executive_summary(manager, daily_brief_notifier())
 
 
 if __name__ == "__main__":

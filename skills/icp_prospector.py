@@ -34,10 +34,15 @@ class IcpProspectorSkill(Skill):
         top_n = payload.get("top_n", 5)
         
         try:
-            # Load and filter CSV data
-            companies = self._load_and_filter_csv(
-                seed_path, industries, employee_min, employee_max, funding_stages
-            )
+            seed_rows = self._seed_rows(task.get("db_path"))
+            if seed_rows:
+                companies = self._companies_from_rows(
+                    seed_rows, industries, employee_min, employee_max, funding_stages
+                )
+            else:
+                companies = self._load_and_filter_csv(
+                    seed_path, industries, employee_min, employee_max, funding_stages
+                )
             
             if not companies:
                 return {
@@ -126,6 +131,47 @@ class IcpProspectorSkill(Skill):
         except Exception as e:
             logger.error(f"Error loading CSV {seed_path}: {e}")
             
+        return companies
+
+    def _seed_rows(self, db_path: str | None) -> List[Dict[str, Any]]:
+        if not db_path:
+            return []
+        try:
+            from desk_settings import list_icp_seed
+
+            return list_icp_seed(db_path)
+        except Exception as exc:
+            logger.warning("ICP seed list unavailable: %s", exc)
+            return []
+
+    def _companies_from_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        industries: set,
+        employee_min: int,
+        employee_max: int,
+        funding_stages: set,
+    ) -> List[Dict[str, Any]]:
+        companies = []
+        for row in rows:
+            shaped = {key: "" if value is None else str(value) for key, value in row.items()}
+            if not self._passes_hard_filters(
+                shaped, industries, employee_min, employee_max, funding_stages
+            ):
+                continue
+            companies.append(
+                {
+                    "company_name": shaped.get("company_name", "").strip(),
+                    "website": shaped.get("website", "").strip(),
+                    "industry": shaped.get("industry", "").strip().lower(),
+                    "employee_count": self._safe_int(shaped.get("employee_count")),
+                    "funding_stage": shaped.get("funding_stage", "").strip().lower(),
+                    "has_cto": shaped.get("has_cto", "").strip().lower(),
+                    "acquired": shaped.get("acquired", "").strip().lower(),
+                    "hiring_signals_url": shaped.get("hiring_signals_url", "").strip(),
+                    "is_hiring_ai": "unknown",
+                }
+            )
         return companies
 
     def _passes_hard_filters(

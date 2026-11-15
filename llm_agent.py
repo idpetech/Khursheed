@@ -13,7 +13,7 @@ from chat_memory import load_recent_turns
 from chat_memory import record_turn
 from executive_summary import generate_executive_summary
 from manager import Manager
-from notifications import MarkdownFileNotifier
+from notifications import daily_brief_notifier
 from principal_profile import principal_prompt_block
 
 
@@ -191,7 +191,7 @@ class HeyEmanAgent:
             return {"error": str(exc)}
 
     def _generate_summary(self) -> str:
-        return generate_executive_summary(self._manager, MarkdownFileNotifier())
+        return generate_executive_summary(self._manager, daily_brief_notifier())
 
     def _list_priority_actions(self) -> dict[str, Any]:
         from executive_summary import _format_priority_alerts

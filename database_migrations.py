@@ -46,6 +46,9 @@ class DatabaseMigrations:
                 (8, "add_pending_actions_source_key", self._add_pending_actions_source_key),
                 (9, "create_open_loops", self._create_open_loops_table),
                 (10, "create_chat_turns", self._create_chat_turns_table),
+                (11, "create_bill_suppressions", self._create_bill_suppressions_table),
+                (12, "create_billers", self._create_billers_table),
+                (13, "create_desk_settings", self._create_desk_settings_table),
             ]
             
             for version, name, migration_func in migrations:
@@ -527,6 +530,63 @@ class DatabaseMigrations:
             CREATE INDEX IF NOT EXISTS idx_chat_turns_session_created
             ON chat_turns(session_id, created_at)
         """)
+
+    def _create_desk_settings_table(self, conn: sqlite3.Connection) -> None:
+        """Migration 13: Mail window, research queries, and the ICP seed list."""
+        from desk_settings import _create
+
+        _create(conn)
+
+    def _create_billers_table(self, conn: sqlite3.Connection) -> None:
+        """Migration 12: Domains whose mail is always checked for a bill or subscription."""
+        from billers import SEEDED_BILLERS
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS billers (
+                domain TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                created_by TEXT NOT NULL DEFAULT 'desk'
+            )
+        """)
+        now = datetime.now(timezone.utc).isoformat()
+        for domain, name, kind in SEEDED_BILLERS:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO billers
+                    (domain, display_name, kind, created_at, created_by)
+                VALUES (?, ?, ?, ?, 'seed')
+                """,
+                (domain, name, kind, now),
+            )
+
+    def _create_bill_suppressions_table(self, conn: sqlite3.Connection) -> None:
+        """Migration 11: Learned/seeded false-positive guards for bill detection."""
+        from bill_feedback import SEEDED_SUPPRESS_DOMAINS
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS bill_suppressions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                match_type TEXT NOT NULL,
+                match_value TEXT NOT NULL,
+                reason TEXT,
+                source_action_id TEXT,
+                created_at TEXT NOT NULL,
+                created_by TEXT NOT NULL DEFAULT 'desk',
+                UNIQUE(match_type, match_value)
+            )
+        """)
+        now = datetime.now(timezone.utc).isoformat()
+        for domain in SEEDED_SUPPRESS_DOMAINS:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO bill_suppressions
+                    (match_type, match_value, reason, source_action_id, created_at, created_by)
+                VALUES ('sender_domain', ?, ?, NULL, ?, 'seed')
+                """,
+                (domain.lower(), "Seeded newsletter/domain false-positive guard", now),
+            )
 
 
 def migrate_database(db_path: str = "khursheed.db") -> None:

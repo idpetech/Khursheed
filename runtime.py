@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -13,6 +14,11 @@ TEST_ACTION_TYPES = ("test", "test_dedup", "test_financial")
 
 
 def resolve_db_path(db_path: str | Path = "khursheed.db") -> Path:
+    """Project database. KHURSHEED_DB_PATH overrides the default for a volume mount."""
+    if str(db_path) == "khursheed.db":
+        override = os.getenv("KHURSHEED_DB_PATH", "").strip()
+        if override:
+            db_path = override
     path = Path(db_path)
     if not path.is_absolute():
         path = PROJECT_ROOT / path

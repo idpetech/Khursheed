@@ -3,23 +3,39 @@ from __future__ import annotations
 import ast
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List
 
 from manager import Manager
 from notifications import Notifier
 
 
+def _window_phrase(days: int) -> str:
+    if int(days) <= 1:
+        return "the last 24 hours"
+    return f"the last {int(days)} days"
+
+
 def generate_executive_summary(
     manager: Manager,
     notifier: Notifier,
     now: datetime | None = None,
+    lookback_days: int | None = None,
 ) -> str:
     timestamp = now or datetime.now(timezone.utc)
-    since = timestamp - timedelta(days=1)
-    runs = manager.get_runs_since(since)
-
     db_path = str(getattr(manager, "_db_path", "khursheed.db"))
-    tasks_section = _format_tasks(runs)
+    if lookback_days is None:
+        try:
+            from desk_settings import brief_lookback_days
+
+            lookback_days = brief_lookback_days(db_path)
+        except Exception:
+            lookback_days = 1
+    since = timestamp - timedelta(days=lookback_days)
+    runs = manager.get_runs_since(since)
+    window = _window_phrase(lookback_days)
+
+    tasks_section = _format_tasks(runs, lookback_days)
     pending_bills = _extract_pending_bills(runs)
     leads = _extract_top_leads(runs, limit=3)
     priority_alerts = _extract_priority_alerts(min_priority=2, db_path=db_path)
@@ -44,13 +60,15 @@ def generate_executive_summary(
             _format_pending_bills(pending_bills),
             "",
             "## Top Leads",
-            _format_leads(leads),
+            _format_leads(leads, window, _research_error(runs, "lead_scout")),
             "",
             "## Fractional CTO Opportunities",
-            _format_cto_opportunities(cto_opportunities),
+            _format_cto_opportunities(
+                cto_opportunities, window, _research_error(runs, "cto_radar")
+            ),
             "",
             "## Top ICP Companies",
-            _format_icp_companies(icp_companies),
+            _format_icp_companies(icp_companies, window, _research_error(runs, "icp_prospector")),
             "",
             "## Open Loops",
             _format_open_loops(open_loops),
@@ -171,22 +189,57 @@ def _format_priority_alerts(alerts: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def mail_origin(alert: Dict[str, Any]) -> Dict[str, str]:
+    """Inbox address, sender, subject, and sent time for one stored message.
+
+    Older rows stored a short account name such as yahoo2. That name is
+    resolved to the mailbox address in config/email_accounts.json.
+    """
+    payload = _alert_payload(alert)
+    title = alert.get("title") or ""
+    nickname = _alert_text(payload, "account", "mailbox")
+    inbox = _alert_text(payload, "account_email", "mailbox_email") or _mailbox_address(nickname)
+    sender = _alert_text(payload, "from", "sender")
+    subject = _alert_text(payload, "subject") or _description_subject(alert, title)
+    sent = _alert_text(payload, "sent_at", "date", "email_date")
+    return {"inbox": inbox, "sender": sender, "subject": subject, "sent": sent}
+
+
 def _priority_alert_details(alert: Dict[str, Any], title: str) -> List[str]:
     """Sender and dates live on the payload. Say so when they were never stored."""
-    payload = _alert_payload(alert)
-    sender = _alert_text(payload, "from", "sender", "email") or "not recorded"
-    subject = _alert_text(payload, "subject") or _description_subject(alert, title)
-    mailbox = _alert_text(payload, "account", "mailbox")
-    sent = _alert_text(payload, "sent_at", "date", "email_date") or "not recorded"
+    origin = mail_origin(alert)
     recorded = alert.get("created_at") or "not recorded"
-    details = [f"  From: {sender}"]
-    if subject:
-        details.append(f"  Subject: {subject}")
-    if mailbox:
-        details.append(f"  Mailbox: {mailbox}")
-    details.append(f"  Sent: {sent}")
+    details = [f"  Inbox: {origin['inbox'] or 'not recorded'}"]
+    details.append(f"  From: {origin['sender'] or 'not recorded'}")
+    if origin["subject"]:
+        details.append(f"  Subject: {origin['subject']}")
+    details.append(f"  Sent: {origin['sent'] or 'not recorded'}")
     details.append(f"  Recorded: {recorded}")
     return details
+
+
+def _mailbox_address(nickname: str) -> str:
+    if not nickname:
+        return ""
+    directory = _mailbox_directory()
+    return directory.get(nickname, nickname)
+
+
+def _mailbox_directory() -> Dict[str, str]:
+    path = Path(__file__).resolve().parent / "config" / "email_accounts.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    directory: Dict[str, str] = {}
+    for entry in data.get("accounts", []):
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        username = entry.get("username")
+        if isinstance(name, str) and isinstance(username, str) and name.strip() and username.strip():
+            directory[name.strip()] = username.strip()
+    return directory
 
 
 def _description_subject(alert: Dict[str, Any], title: str) -> str:
@@ -239,9 +292,39 @@ def _extract_cto_opportunities(runs: List[Dict[str, Any]], limit: int) -> List[D
     return opportunities[:limit]
 
 
-def _format_cto_opportunities(opportunities: List[Dict[str, Any]]) -> str:
+def _research_error(runs: List[Dict[str, Any]], skill_name: str) -> str:
+    for run in runs:
+        if run.get("skill_name") != skill_name:
+            continue
+        payload = _parse_result(run.get("result_json"))
+        error = payload.get("error")
+        if error:
+            return str(error)[:300]
+    return ""
+
+
+def _parse_result(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str) or not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _format_cto_opportunities(
+    opportunities: List[Dict[str, Any]],
+    window: str = "the last 24 hours",
+    error: str = "",
+) -> str:
     if not opportunities:
-        return "_No fractional CTO opportunities found in the last 24 hours._"
+        text = f"_No fractional CTO opportunities found in {window}._"
+        if error:
+            return text + f"\n\nLast search failed: {error}"
+        return text
     lines = []
     for opp in opportunities:
         tags = ", ".join(opp.get("tags", [])) or "Uncategorized"
@@ -267,9 +350,16 @@ def _extract_icp_companies(runs: List[Dict[str, Any]], limit: int) -> List[Dict[
     return companies[:limit]
 
 
-def _format_icp_companies(companies: List[Dict[str, Any]]) -> str:
+def _format_icp_companies(
+    companies: List[Dict[str, Any]],
+    window: str = "the last 24 hours",
+    error: str = "",
+) -> str:
     if not companies:
-        return "_No ICP companies found in the last 24 hours._"
+        text = f"_No ICP companies found in {window}._"
+        if error:
+            return text + f"\n\nLast search failed: {error}"
+        return text
     lines = []
     for company in companies:
         name = company.get("name") or company.get("company_name") or "(unknown)"
@@ -283,9 +373,9 @@ def _format_icp_companies(companies: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _format_tasks(runs: List[Dict[str, Any]]) -> str:
+def _format_tasks(runs: List[Dict[str, Any]], lookback_days: int = 1) -> str:
     if not runs:
-        return "_No tasks executed in the last 24 hours._"
+        return f"_No tasks executed in {_window_phrase(lookback_days)}._"
     lines = []
     for run in runs:
         lines.append(
@@ -334,16 +424,23 @@ def _extract_top_leads(runs: List[Dict[str, Any]], limit: int) -> List[Dict[str,
         if run["skill_name"] != "lead_scout":
             continue
         payload = json.loads(run["result_json"])
-        for query in payload.get("queries", []):
+        for query in payload.get("queries") or []:
             for lead in query.get("leads", []):
                 leads.append(lead)
     leads.sort(key=lambda lead: lead.get("score", 0), reverse=True)
     return leads[:limit]
 
 
-def _format_leads(leads: List[Dict[str, Any]]) -> str:
+def _format_leads(
+    leads: List[Dict[str, Any]],
+    window: str = "the last 24 hours",
+    error: str = "",
+) -> str:
     if not leads:
-        return "_No leads found in the last 24 hours._"
+        text = f"_No leads found in {window}._"
+        if error:
+            return text + f"\n\nLast search failed: {error}"
+        return text
     lines = []
     for lead in leads:
         tags = ", ".join(lead.get("tags", [])) or "Uncategorized"

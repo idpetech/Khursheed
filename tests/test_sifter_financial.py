@@ -117,6 +117,7 @@ class TestSifterFinancialDetection(unittest.TestCase):
             priority=2,
             expires_at="2024-12-31T23:59:59",
             sent_at="Thu, 28 May 2026 12:00:00 +0000",
+            account_email="haseeb_toor@yahoo.com",
         )
         
         self.assertEqual(action_id, "test-action-id-123")
@@ -132,6 +133,7 @@ class TestSifterFinancialDetection(unittest.TestCase):
         self.assertIn("vendor", kwargs["payload"])
         self.assertEqual(kwargs["payload"]["from"], "billing@testcorp.com")
         self.assertEqual(kwargs["payload"]["sent_at"], "Thu, 28 May 2026 12:00:00 +0000")
+        self.assertEqual(kwargs["payload"]["account_email"], "haseeb_toor@yahoo.com")
 
     @patch('openai.OpenAI')
     @patch('priority_inbox.emit_priority_action')

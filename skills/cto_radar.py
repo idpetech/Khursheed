@@ -13,6 +13,14 @@ from skills.tavily_client import tavily_search
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_QUERIES = [
+    '"fractional CTO" remote United States',
+    '"part-time CTO" remote United States',
+    '"interim CTO" remote United States',
+    '"fractional CTO" Jacksonville FL hybrid OR remote',
+    '"fractional CTO" startup Florida remote',
+]
+
 
 class CtoRadarSkill(Skill):
     name = "cto_radar"
@@ -20,16 +28,13 @@ class CtoRadarSkill(Skill):
     def run(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Search for fractional CTO opportunities and score them"""
         try:
-            # Define search queries for fractional CTO opportunities
-            queries = [
-                '"fractional CTO" remote United States',
-                '"part-time CTO" remote United States',
-                '"interim CTO" remote United States',
-                '"fractional CTO" Jacksonville FL hybrid OR remote',
-                '"fractional CTO" startup Florida remote'
-            ]
+            payload = task.get("payload", {})
+            queries = [query for query in payload.get("queries") or [] if str(query).strip()]
+            if not queries:
+                queries = list(DEFAULT_QUERIES)
             
             all_opportunities = []
+            search_errors: List[str] = []
             
             # Execute each search query
             for query in queries:
@@ -46,6 +51,7 @@ class CtoRadarSkill(Skill):
                                 
                 except Exception as e:
                     logger.warning(f"Search failed for query '{query}': {e}")
+                    search_errors.append(str(e))
                     continue
             
             # Remove duplicates based on URL
@@ -63,11 +69,14 @@ class CtoRadarSkill(Skill):
             except Exception as loop_error:
                 logger.warning("CTO radar could not write open loops: %s", loop_error)
 
-            return {
+            result = {
                 "opportunities": top_opportunities,
                 "total_found": len(unique_opportunities),
                 "queries_executed": len(queries)
             }
+            if not top_opportunities and search_errors:
+                result["error"] = search_errors[0]
+            return result
             
         except Exception as e:
             logger.error(f"CTO Radar skill failed: {e}")

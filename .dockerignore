@@ -1,0 +1,21 @@
+# Local secrets and data never enter the image.
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+.venv/
+venv/
+.git/
+.cursor/
+.coverage
+__pycache__/
+**/__pycache__/
+logs/
+executive_summary.md
+business_expenses.json
+khursheed.db*
+*.pem
+credentials.json

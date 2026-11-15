@@ -404,7 +404,7 @@ class SummaryCoverageTests(unittest.TestCase):
             ]
         )
         self.assertIn("From: billing@testcorp.com", detailed)
-        self.assertIn("Mailbox: yahoo", detailed)
+        self.assertIn("Inbox: techvizpro@yahoo.com", detailed)
         self.assertIn("Sent: Thu, 28 May 2026 12:00:00 +0000", detailed)
         self.assertIn("Recorded: 2026-05-29T03:12:59+00:00", detailed)
         self.assertIn("Subject: Database backup failed", detailed)

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from database_migrations import DatabaseMigrations
+from runtime import resolve_db_path
 from skills.base import Skill
 from skill_context import SkillContext
 from mcp_registry import MCPRegistry
@@ -47,7 +48,7 @@ class ThreadLocalConnection:
 class Manager:
     def __init__(self, db_path: str = "khursheed.db") -> None:
         self._skills: Dict[str, Skill] = {}
-        self._db_path = PROJECT_ROOT / db_path
+        self._db_path = resolve_db_path(db_path)
         self._connection_manager = ThreadLocalConnection(self._db_path)
         self._init_lock = threading.RLock()
         self._initialized = False

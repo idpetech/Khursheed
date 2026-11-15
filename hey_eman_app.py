@@ -12,14 +12,28 @@ import streamlit as st
 
 import blog_themes
 from action_executor import approve_and_execute
+from bill_feedback import reject_not_a_bill
+from billers import add_biller
+from billers import list_billers
+from desk_settings import add_icp_company
+from desk_settings import get_int
+from desk_settings import get_setting
+from desk_settings import icp_enabled
+from desk_settings import morning_run_enabled
+from desk_settings import parse_morning_time
+from desk_settings import list_icp_seed
+from desk_settings import prepare_desk_tasks
+from desk_settings import remove_icp_company
+from desk_settings import set_setting
 from chat_memory import load_turns
 from chat_memory import record_turn
 from executive_summary import _format_open_loops
 from executive_summary import _format_priority_alerts
 from executive_summary import generate_executive_summary
+from executive_summary import mail_origin
 from llm_agent import HeyEmanAgent
 from manager import Manager
-from notifications import MarkdownFileNotifier
+from notifications import daily_brief_notifier
 from open_loops import list_open_loops
 from priority_inbox import BILL_KINDS
 from priority_inbox import list_open_priority_actions
@@ -46,30 +60,19 @@ def _inject_base_css() -> None:
         .block-container {
             max-width: 1040px;
             padding-top: 2rem;
-            padding-bottom: 0.5rem;
-            height: calc(100vh - 9rem); /* clear the top header bar + bottom chat bar */
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            padding-bottom: 5rem;
+            height: auto;
+            overflow: visible;
         }
         [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] {
-            flex: 1 1 auto;
             min-height: 0;
         }
-        /* The tabs element grows to fill the leftover vertical space ... */
         [data-testid="stTabs"] {
-            flex: 1 1 auto;
             min-height: 0;
-            display: flex;
-            flex-direction: column;
         }
-        /* ... and so does the baseweb wrapper inside it, so the panel can scroll */
         [data-testid="stTabs"] > div {
-            flex: 1 1 auto;
             min-height: 0;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
+            overflow: visible;
         }
         /* Finger-friendly buttons with a subtle hover */
         .stButton > button, .stFormSubmitButton > button {
@@ -88,11 +91,8 @@ def _inject_base_css() -> None:
             border-bottom: 1px solid rgba(0,0,0,0.06);
         }
         .stTabs [data-baseweb="tab"] { padding: 0.5rem 0.9rem; }
-        /* Each tab's content is the single scrollable pane */
         .stTabs [data-baseweb="tab-panel"] {
-            flex: 1 1 auto;
-            min-height: 0;
-            overflow-y: auto;
+            overflow: visible;
             padding-right: 0.5rem;
         }
         /* The Ask Enaam input is a globally pinned bar, so scope it to the chat
@@ -191,7 +191,7 @@ def _require_password() -> None:
     if not expected:
         _inject_base_css()
         st.title("Enaam")
-        st.error("Set KHURSHEED_UI_PASSWORD in .env, then reload this page.")
+        st.error("Set KHURSHEED_UI_PASSWORD in the environment, then reload this page.")
         st.stop()
     if st.session_state.get("desk_open"):
         return
@@ -211,10 +211,6 @@ def _require_password() -> None:
                 st.rerun()
             st.error("That password is not recognized.")
     st.stop()
-
-
-def _desk_mode() -> str:
-    return st.session_state.get("desk_mode", "Day to day")
 
 
 # ---------------------------------------------------------------------------
@@ -259,21 +255,45 @@ def _parse_payload(raw) -> dict:
 # Rendering: Today
 # ---------------------------------------------------------------------------
 
+def _render_mail_origin(action: dict) -> None:
+    """Show which mailbox received the message, who sent it, and when."""
+    origin = mail_origin(action)
+    rows = [
+        ("Inbox", origin["inbox"]),
+        ("From", origin["sender"]),
+        ("Subject", origin["subject"]),
+        ("Sent", origin["sent"]),
+    ]
+    visible = [(label, value) for label, value in rows if value]
+    if not visible:
+        return
+    st.markdown("  \n".join(f"**{label}** {value}" for label, value in visible))
+
+
 def _render_bill_question(db_path: str, action: dict, key_prefix: str) -> None:
-    """Ask once per visit whether a stored bill has been paid."""
+    """Ask once per visit whether a stored bill has been paid — or if it is a false positive."""
     payload = _parse_payload(action.get("payload_json"))
     due = payload.get("due_date") or "no due date yet"
     amount = payload.get("amount")
     currency = payload.get("currency") or ""
     amount_text = f"{amount} {currency}".strip() if amount not in (None, "") else "amount unknown"
     st.markdown(f"Have you paid this? **{amount_text}**, due {due}.")
-    paid, later = st.columns(2)
+    paid, later, not_bill = st.columns(3)
     if paid.button("Paid", key=f"{key_prefix}-paid-{action.get('action_id')}"):
         result = approve_and_execute(db_path, action["action_id"], reviewed_by="desk")
         st.session_state.last_ack = result.get("message") or "Marked paid."
         st.rerun()
     if later.button("Not yet", key=f"{key_prefix}-later-{action.get('action_id')}"):
         st.toast("Still open. I'll check this bill again tomorrow.")
+    if not_bill.button("Not a bill", key=f"{key_prefix}-notbill-{action.get('action_id')}"):
+        result = reject_not_a_bill(db_path, action["action_id"], reviewed_by="desk")
+        st.session_state.last_ack = result.get("message") or "Marked not a bill."
+        st.rerun()
+    sender = payload.get("from") or ""
+    if sender and st.button("Remember sender", key=f"{key_prefix}-remember-{action.get('action_id')}"):
+        result = add_biller(db_path, sender, kind="bill")
+        st.session_state.last_ack = result.get("message") or "Sender saved."
+        st.rerun()
 
 
 def _open_bills(db_path: str) -> list[dict]:
@@ -281,7 +301,7 @@ def _open_bills(db_path: str) -> list[dict]:
     return [action for action in pending if action.get("action_type") in BILL_KINDS]
 
 
-def _render_today(manager: Manager, demo: bool) -> None:
+def _render_today(manager: Manager) -> None:
     """Each section is a collapsible card; urgent decisions open by default."""
     db_path = str(manager._db_path)
     refresh_open_bill_priorities(db_path)
@@ -295,6 +315,7 @@ def _render_today(manager: Manager, demo: bool) -> None:
             st.caption("No open bills.")
         for bill in bills:
             st.markdown(f"**{bill.get('title') or 'Bill'}**")
+            _render_mail_origin(bill)
             _render_bill_question(db_path, bill, "today")
 
     with st.expander(f"Needs a decision ({len(alerts)})", expanded=bool(alerts)):
@@ -315,6 +336,186 @@ def _render_today(manager: Manager, demo: bool) -> None:
         else:
             st.caption("No brief yet. Use Run morning brief above.")
 
+    _render_billers(db_path)
+
+    if st.session_state.get("last_ack"):
+        st.toast(st.session_state.last_ack)
+        del st.session_state["last_ack"]
+
+
+def _render_research(db_path: str) -> None:
+    """Mail window, lead queries, and the ICP list the morning run uses."""
+    seed = list_icp_seed(db_path)
+    st.caption(
+        "Saved in the desk database. The next morning run uses them. "
+        "ICP stays off until you turn it on. The companies below are samples until you replace them. "
+        "The automatic run uses this Mac's clock and needs the Mac awake within 30 minutes of that time."
+    )
+    with st.form("desk-research"):
+            mail_days = st.number_input(
+                "Days of mail to scan",
+                min_value=1,
+                max_value=30,
+                value=get_int(db_path, "mail_lookback_days", 2, 1, 30),
+            )
+            brief_days = st.number_input(
+                "Days of research to include in the brief",
+                min_value=1,
+                max_value=30,
+                value=get_int(db_path, "brief_lookback_days", 7, 1, 30),
+            )
+            lead_every = st.number_input(
+                "Lead search every N days",
+                min_value=1,
+                max_value=30,
+                value=get_int(db_path, "lead_interval_days", 3, 1, 30),
+            )
+            lead_queries = st.text_area(
+                "Lead searches, one per line",
+                value=get_setting(db_path, "lead_queries"),
+                height=100,
+            )
+            cto_queries = st.text_area(
+                "Fractional CTO searches, one per line",
+                value=get_setting(db_path, "cto_queries"),
+                height=120,
+            )
+            run_icp = st.checkbox("Include ICP companies in the morning run", value=icp_enabled(db_path))
+            industries = st.text_input(
+                "ICP industries, comma separated",
+                value=get_setting(db_path, "icp_industries"),
+            )
+            left, right = st.columns(2)
+            employee_min = left.number_input(
+                "Minimum employees",
+                min_value=1,
+                max_value=100000,
+                value=get_int(db_path, "icp_employee_min", 10, 1, 100000),
+            )
+            employee_max = right.number_input(
+                "Maximum employees",
+                min_value=1,
+                max_value=100000,
+                value=get_int(db_path, "icp_employee_max", 50, 1, 100000),
+            )
+            stages = st.text_input(
+                "Funding stages, comma separated",
+                value=get_setting(db_path, "icp_funding_stages"),
+            )
+            top_n = st.number_input(
+                "ICP companies to keep",
+                min_value=1,
+                max_value=20,
+                value=get_int(db_path, "icp_top_n", 5, 1, 20),
+            )
+            icp_every = st.number_input(
+                "ICP search every N days",
+                min_value=1,
+                max_value=30,
+                value=get_int(db_path, "icp_interval_days", 3, 1, 30),
+            )
+            run_morning = st.checkbox(
+                "Run the morning brief automatically",
+                value=morning_run_enabled(db_path),
+            )
+            morning_time = st.text_input(
+                "Morning run time (24-hour, this Mac)",
+                value=get_setting(db_path, "morning_run_time", "07:00"),
+            )
+            if st.form_submit_button("Save research settings"):
+                set_setting(db_path, "mail_lookback_days", str(int(mail_days)))
+                set_setting(db_path, "brief_lookback_days", str(int(brief_days)))
+                set_setting(db_path, "lead_interval_days", str(int(lead_every)))
+                set_setting(db_path, "lead_queries", lead_queries.strip())
+                set_setting(db_path, "cto_queries", cto_queries.strip())
+                set_setting(db_path, "icp_enabled", "1" if run_icp else "0")
+                set_setting(db_path, "icp_industries", industries.strip())
+                set_setting(db_path, "icp_employee_min", str(int(employee_min)))
+                set_setting(db_path, "icp_employee_max", str(int(employee_max)))
+                set_setting(db_path, "icp_funding_stages", stages.strip())
+                set_setting(db_path, "icp_top_n", str(int(top_n)))
+                set_setting(db_path, "icp_interval_days", str(int(icp_every)))
+                set_setting(db_path, "morning_run_enabled", "1" if run_morning else "0")
+                parsed_time = parse_morning_time(morning_time)
+                if parsed_time is None:
+                    st.session_state.last_ack = "Morning time must look like 07:00. Other settings were saved."
+                else:
+                    hour, minute = parsed_time
+                    set_setting(db_path, "morning_run_time", f"{hour:02d}:{minute:02d}")
+                    st.session_state.last_ack = "Research settings saved."
+                st.rerun()
+    st.markdown(f"**ICP companies ({len(seed)})**")
+    st.caption("A company marked has CTO = yes is skipped. The morning run researches the rest.")
+    with st.form("add-icp", clear_on_submit=True):
+        name = st.text_input("Company")
+        website = st.text_input("Website")
+        industry = st.text_input("Industry", placeholder="saas")
+        employees = st.number_input("Employees", min_value=0, max_value=100000, value=20)
+        stage = st.text_input("Funding stage", placeholder="seed")
+        has_cto = st.selectbox("Has a CTO", ["unknown", "no", "yes"])
+        if st.form_submit_button("Add company") and name.strip():
+            result = add_icp_company(
+                db_path,
+                name,
+                website,
+                industry,
+                int(employees),
+                stage,
+                has_cto,
+            )
+            st.session_state.last_ack = result.get("message") or "Company saved."
+            st.rerun()
+    for row in seed:
+        left, right = st.columns([5, 1])
+        left.markdown(
+            f"**{row['company_name']}** · {row['industry'] or 'industry unset'} · "
+            f"{row['employee_count']} people · {row['funding_stage'] or 'stage unset'}"
+        )
+        if right.button("Remove", key=f"icp-del-{row['company_name']}"):
+            result = remove_icp_company(db_path, row["company_name"])
+            st.session_state.last_ack = result.get("message") or "Removed."
+            st.rerun()
+
+
+def _render_billers(db_path: str) -> None:
+    """Let the desk keep the domains that must always be read for a bill."""
+    billers = list_billers(db_path)
+    kind_labels = {
+        "bill": "Bill",
+        "card_statement": "Card statement",
+        "subscription": "Subscription",
+    }
+    with st.expander(f"Billers ({len(billers)})", expanded=False):
+        st.caption(
+            "Mail from these domains is always checked, even when the wording is new. "
+            "A subdomain counts: mail2.jea.com matches jea.com. "
+            "Not a bill on one of these forgets that subject only."
+        )
+        with st.form("add-biller", clear_on_submit=True):
+            domain = st.text_input("Domain or sender email", placeholder="paypal.com")
+            name = st.text_input("Name", placeholder="PayPal")
+            kind = st.selectbox(
+                "What they send",
+                list(kind_labels),
+                format_func=lambda value: kind_labels[value],
+            )
+            if st.form_submit_button("Add biller") and domain.strip():
+                result = add_biller(db_path, domain, name, kind)
+                st.session_state.last_ack = result.get("message") or "Biller saved."
+                st.rerun()
+        if not billers:
+            st.caption("No billers yet.")
+            return
+        for row in billers:
+            left, right = st.columns([5, 1])
+            left.markdown(
+                f"**{row['display_name']}** · `{row['domain']}` · {kind_labels.get(row['kind'], row['kind'])}"
+            )
+            if right.button("Remove", key=f"biller-del-{row['domain']}"):
+                result = remove_biller(db_path, row["domain"])
+                st.session_state.last_ack = result.get("message") or "Removed."
+                st.rerun()
+
 
 # ---------------------------------------------------------------------------
 # Rendering: Review queue
@@ -328,18 +529,20 @@ def _render_review_queue(manager: Manager) -> None:
         return
     st.caption(f"{len(pending)} waiting — expand an item to review it.")
     for action in pending:
+        origin = mail_origin(action)
         label = action.get("title") or "(untitled)"
+        if origin["inbox"]:
+            label = f"{label} · {origin['inbox']}"
         action_type = action.get("action_type") or ""
         with st.expander(label, expanded=(action_type == "linkedin_post_draft")):
             st.caption(action_type)
+            _render_mail_origin(action)
             if action_type == "linkedin_post_draft":
                 _render_blog_draft(action)
             elif action_type in BILL_KINDS:
-                if action.get("description"):
-                    st.markdown(action["description"])
                 _render_bill_question(db_path, action, "review")
                 continue
-            elif action.get("description"):
+            elif action.get("description") and action.get("description") != origin["subject"]:
                 st.markdown(action["description"])
             if st.button("Acknowledge", key=f"ack-{action.get('action_id')}"):
                 result = approve_and_execute(db_path, action["action_id"], reviewed_by="desk")
@@ -575,10 +778,14 @@ def _run_skill_now(manager: Manager, skill_name: str, payload: dict | None = Non
     )
 
 
+def _brief_notifier():
+    return daily_brief_notifier(str(PROJECT_ROOT / "executive_summary.md"))
+
+
 def _handle_query(query: str, manager: Manager) -> str:
     normalized = query.strip().lower()
     if "summary" in normalized:
-        return generate_executive_summary(manager, MarkdownFileNotifier())
+        return generate_executive_summary(manager, _brief_notifier())
     if "todo" in normalized:
         tasks = _load_tasks()
         return "### Configured Tasks\n" + _render_todos(tasks)
@@ -586,7 +793,7 @@ def _handle_query(query: str, manager: Manager) -> str:
         _run_skill_now(manager, "sifter")
         return "Email check complete. Ask for the daily brief for details."
     if "run" in normalized:
-        tasks = manager.load_tasks("tasks.json")
+        tasks = prepare_desk_tasks(manager.load_tasks("tasks.json"), manager._db_path)
         manager.run_tasks(tasks)
         return "Tasks executed. Ask for the daily brief for details."
     return "Try: 'daily brief', 'what are my todos today', or 'run tasks'."
@@ -597,20 +804,16 @@ def _handle_query(query: str, manager: Manager) -> str:
 # ---------------------------------------------------------------------------
 
 def _run_morning(manager: Manager) -> None:
-    notifier = MarkdownFileNotifier(str(PROJECT_ROOT / "executive_summary.md"))
+    notifier = _brief_notifier()
     with st.spinner("Reading mail and research. This takes a few minutes."):
-        manager.run_tasks(manager.load_tasks("tasks.json"))
+        tasks = prepare_desk_tasks(manager.load_tasks("tasks.json"), manager._db_path)
+        manager.run_tasks(tasks)
         st.session_state.brief = generate_executive_summary(manager, notifier)
     st.toast("Morning brief ready")
 
 
-def _render_header(manager: Manager, demo: bool) -> None:
+def _render_header(manager: Manager) -> None:
     today = datetime.now().strftime("%A, %b %d")
-    if demo:
-        st.title("Enaam")
-        st.caption(f"{today} · Demo session — LinkedIn publish stays off.")
-        return
-
     st.title(_greeting())
     st.caption(today)
     _render_chips(manager)
@@ -619,12 +822,19 @@ def _render_header(manager: Manager, demo: bool) -> None:
     if c1.button("Run morning brief", use_container_width=True, type="primary", icon=":material/bolt:"):
         _run_morning(manager)
     if c2.button("Refresh brief", use_container_width=True, icon=":material/refresh:"):
-        notifier = MarkdownFileNotifier(str(PROJECT_ROOT / "executive_summary.md"))
+        notifier = _brief_notifier()
         st.session_state.brief = generate_executive_summary(manager, notifier)
         st.toast("Brief refreshed")
     if c3.button("Check mail now", use_container_width=True, icon=":material/mail:"):
         with st.spinner("Checking the three mailboxes."):
-            _run_skill_now(manager, "sifter", {"max_messages": 100})
+            _run_skill_now(
+                manager,
+                "sifter",
+                {
+                    "max_messages": 100,
+                    "lookback_days": get_int(str(manager._db_path), "mail_lookback_days", 2, 1, 30),
+                },
+            )
         st.toast("Mail check finished")
 
 
@@ -633,7 +843,7 @@ def _render_header(manager: Manager, demo: bool) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    st.set_page_config(page_title="Enaam", layout="wide")
+    st.set_page_config(page_title="Enaam", layout="wide", initial_sidebar_state="expanded")
     _load_dotenv()
     _require_password()
 
@@ -654,33 +864,28 @@ def main() -> None:
     with st.sidebar:
         st.header("Enaam")
         st.caption("Chief of staff")
-        mode = st.radio("Session", ["Day to day", "Demo"], index=0)
-        st.session_state.desk_mode = mode
-    demo = mode == "Demo"
+        if st.button("Config", icon=":material/settings:", use_container_width=True):
+            st.session_state.config_open = not st.session_state.get("config_open", False)
+        if st.session_state.get("config_open"):
+            _render_research(str(manager._db_path))
 
     brief_path = PROJECT_ROOT / "executive_summary.md"
     if "brief" not in st.session_state and brief_path.exists():
         st.session_state.brief = brief_path.read_text(encoding="utf-8")
 
-    _render_header(manager, demo)
+    _render_header(manager)
 
     tabs = st.tabs(["Ask Enaam", "Today", "To review", "Content", "Activity"])
     with tabs[0]:
         _render_conversation(manager, agent)
     with tabs[1]:
-        _render_today(manager, demo)
+        _render_today(manager)
     with tabs[2]:
         _render_review_queue(manager)
     with tabs[3]:
-        if demo:
-            st.caption("Content tools are available in Day to day mode.")
-        else:
-            _render_theme_queue(manager)
+        _render_theme_queue(manager)
     with tabs[4]:
-        if demo:
-            st.caption("Activity is available in Day to day mode.")
-        else:
-            _render_runs(manager)
+        _render_runs(manager)
 
     prompt = st.chat_input("Ask Enaam")
     if prompt:

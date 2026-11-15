@@ -62,6 +62,83 @@ class EmailNotifier(Notifier):
         return f"Email sent to {self._recipient}"
 
 
+def _telegram_chunks(content: str, limit: int = 3500) -> list[str]:
+    text = content.strip() or "—"
+    if len(text) <= limit:
+        return [text]
+    chunks: list[str] = []
+    current = ""
+    for line in text.splitlines(keepends=True):
+        if len(line) > limit:
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+            for start in range(0, len(line), limit):
+                chunks.append(line[start : start + limit])
+            continue
+        if len(current) + len(line) > limit:
+            chunks.append(current.rstrip())
+            current = line
+        else:
+            current += line
+    if current.strip():
+        chunks.append(current.rstrip())
+    return chunks or ["—"]
+
+
+class TelegramNotifier(Notifier):
+    """Send the daily brief to a Telegram bot. Missing config is skipped, not fatal."""
+
+    def send(self, content: str) -> str:
+        import logging
+
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        if not token or not chat_id:
+            logging.getLogger(__name__).warning(
+                "Telegram configuration incomplete; daily brief not sent"
+            )
+            return "Telegram skipped (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)"
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        chunks = _telegram_chunks(content)
+        try:
+            for index, chunk in enumerate(chunks, start=1):
+                text = chunk if len(chunks) == 1 else f"({index}/{len(chunks)})\n{chunk}"
+                body = json.dumps(
+                    {
+                        "chat_id": chat_id,
+                        "text": text[:4096],
+                        "disable_web_page_preview": True,
+                    }
+                ).encode("utf-8")
+                request = urllib.request.Request(
+                    url,
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+                with urllib.request.urlopen(request, timeout=20, context=ssl_ctx) as response:
+                    if response.status >= 400:
+                        raise RuntimeError(f"Telegram API returned HTTP {response.status}")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:200]
+            logging.getLogger(__name__).warning("Telegram send failed: HTTP %s %s", exc.code, detail)
+            return f"Telegram failed: HTTP {exc.code}"
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Telegram send failed: %s", exc)
+            return f"Telegram failed: {exc}"
+        return f"Telegram sent to {chat_id}"
+
+
+def daily_brief_notifier(summary_path: str | None = None) -> Notifier:
+    """Write the brief to disk and send it to Telegram when the bot is configured."""
+    return CompositeNotifier(
+        MarkdownFileNotifier(summary_path or "executive_summary.md"),
+        TelegramNotifier(),
+    )
+
+
 def _whatsapp_param(value: str) -> str:
     """Template parameters reject newlines, tabs, and empty text."""
     cleaned = " ".join(str(value).split())

@@ -8,10 +8,11 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 
+from desk_settings import prepare_desk_tasks
 from executive_summary import generate_executive_summary
 from llm_agent import HeyEmanAgent
 from manager import Manager
-from notifications import MarkdownFileNotifier
+from notifications import daily_brief_notifier
 from runtime import prepare_runtime
 from skills_bootstrap import register_default_skills
 
@@ -55,7 +56,7 @@ def _interactive(manager: Manager) -> None:
 def _handle_query(query: str, manager: Manager) -> str:
     normalized = query.strip().lower()
     if "summary" in normalized:
-        return generate_executive_summary(manager, MarkdownFileNotifier())
+        return generate_executive_summary(manager, daily_brief_notifier())
     if "todo" in normalized:
         tasks = manager.load_tasks("tasks.json")
         lines = "\n".join(f"- {task['id']}: {', '.join(task.get('skills', []))}" for task in tasks)
@@ -65,7 +66,7 @@ def _handle_query(query: str, manager: Manager) -> str:
         manager.run_skill("sifter", task_id, {})
         return "Email check complete. Ask for the executive summary for details."
     if "run" in normalized:
-        tasks = manager.load_tasks("tasks.json")
+        tasks = prepare_desk_tasks(manager.load_tasks("tasks.json"), manager._db_path)
         manager.run_tasks(tasks)
         return "Tasks executed. Ask for the executive summary for details."
     return "Try: 'executive summary', 'what are my todos today', 'check email', or 'run tasks'."

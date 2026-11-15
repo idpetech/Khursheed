@@ -1,0 +1,12 @@
+# Secrets belong in Railway service variables, not in this file.
+# Attach a volume mounted at /data so khursheed.db survives deploys.
+# The image sets KHURSHEED_DB_PATH=/data/khursheed.db.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/_stcore/health"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
