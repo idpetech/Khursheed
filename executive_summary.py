@@ -69,6 +69,7 @@ def generate_executive_summary(
             "## Pending Bills",
             pending_bills,
             "",
+            *_mail_scan_section(runs),
             "## Top Leads",
             _format_leads(leads, window, _research_error(runs, "lead_scout")),
             "",
@@ -103,6 +104,8 @@ def mobile_update(report: str) -> str:
             break
     parts = [f"Enaam · {date}", ""]
     parts.extend(_mobile_lines("Bills", sections.get("Pending Bills"), "No bills."))
+    if sections.get("Mail scan"):
+        parts.extend(_mobile_lines("Mail", sections.get("Mail scan"), ""))
     parts.extend(_mobile_lines("Needs you", sections.get("Priority Alerts"), "Nothing needs you."))
     parts.extend(_mobile_lines("Leads", sections.get("Top Leads"), "No new leads."))
     parts.extend(_mobile_lines("CTO", sections.get("Fractional CTO Opportunities"), "No new CTO roles."))
@@ -546,6 +549,23 @@ def _format_tasks(runs: List[Dict[str, Any]], lookback_days: int = 1) -> str:
             f"- `{run['skill_name']}` for `{run['task_id']}` at {run['executed_at']}"
         )
     return "\n".join(lines)
+
+
+def _mail_scan_section(runs: List[Dict[str, Any]]) -> List[str]:
+    """Short lines from the newest sifter scan. The full report stays on Today."""
+    for run in runs:
+        if run.get("skill_name") != "sifter":
+            continue
+        try:
+            payload = json.loads(run.get("result_json") or "{}")
+        except (ValueError, TypeError):
+            continue
+        findings = (payload.get("scan") or {}).get("findings") or []
+        lines = [f"- {item.get('line')}" for item in findings if item.get("line")]
+        if not lines:
+            continue
+        return ["## Mail scan", "\n".join(lines[:8]), ""]
+    return []
 
 
 def _desk_bills(db_path: str) -> List[Dict[str, Any]]:

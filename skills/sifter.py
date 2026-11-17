@@ -43,6 +43,13 @@ class SifterSkill(Skill):
         results: List[Dict[str, Any]] = []
         expenses = self._load_expenses()
         priority_actions: List[Dict[str, Any]] = []
+        findings: List[Dict[str, Any]] = []
+        ignored: List[str] = []
+        coverage_accounts: List[Dict[str, Any]] = []
+        envelopes = 0
+        unique = 0
+        opened = 0
+        unavailable = 0
         # Bills already saved are re-ranked from their due date. This does not
         # open a mailbox, so it ignores the mail lookback setting.
         try:
@@ -53,17 +60,43 @@ class SifterSkill(Skill):
             logger.warning("Could not refresh stored bill priorities: %s", exc)
 
         for account in self._accounts:
-            categorized, account_priority_actions = self._process_account(
-                account, max_messages, lookback_days
-            )
+            account_result = self._process_account(account, max_messages, lookback_days)
+            categorized = account_result["categorized"]
             results.append({"account": account.name, "categorized": categorized})
-            priority_actions.extend(account_priority_actions)
+            priority_actions.extend(account_result["priority_actions"])
+            findings.extend(account_result["findings"])
+            ignored.extend(account_result["ignored"])
+            coverage_accounts.append(account_result["coverage"])
+            envelopes += account_result["envelopes"]
+            unique += account_result["unique"]
+            opened += account_result["opened"]
+            unavailable += account_result["unavailable"]
             for entry in categorized:
                 if entry.get("expense"):
                     expenses.append(entry["expense"])
 
         self._save_expenses(expenses)
-        return {"accounts": results, "expense_count": len(expenses), "priority_actions": priority_actions}
+        from skills.mail_scan import format_scan_report
+
+        scan = {
+            "coverage": {
+                "accounts": coverage_accounts,
+                "envelopes": envelopes,
+                "unique": unique,
+                "opened": opened,
+                "unavailable": unavailable,
+            },
+            "findings": findings,
+            "ignored": ignored[:8],
+        }
+        scan["report"] = format_scan_report(scan["coverage"], findings, scan["ignored"])
+        return {
+            "accounts": results,
+            "expense_count": len(expenses),
+            "priority_actions": priority_actions,
+            "scan": scan,
+            "scan_report": scan["report"],
+        }
 
     def _lookback_days(self, task: Dict[str, Any]) -> int:
         raw = task.get("payload", {}).get("lookback_days")
@@ -86,61 +119,246 @@ class SifterSkill(Skill):
         account: MailAccount,
         max_messages: int,
         lookback_days: int,
-    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    ) -> Dict[str, Any]:
+        """Review headers in the bill folders, then open only the interesting mail."""
+        from skills.mail_scan import choose_mailboxes
+        from skills.mail_scan import local_screen
+        from skills.mail_scan import notable_ignore
+        from skills.mail_scan import parse_mailbox_name
+        from skills.mail_scan import short_when
+        from skills.mail_scan import vendor_name
+
         categorized: List[Dict[str, Any]] = []
         priority_actions: List[Dict[str, Any]] = []
+        findings: List[Dict[str, Any]] = []
+        ignored: List[str] = []
+        coverage = {"name": account.name, "mailboxes": [], "failed": [], "error": ""}
+        envelopes = 0
+        opened = 0
+        unavailable = 0
+        seen: Dict[str, Dict[str, str]] = {}
         since_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%d-%b-%Y")
-        
+        body_cap = max(1, max_messages)
+
         try:
             with imaplib.IMAP4_SSL(account.host) as imap:
                 imap.login(account.username, account.password)
-                imap.select("INBOX")
-                status, data = imap.search(None, "SINCE", since_date)
-                if status != "OK":
-                    return categorized, priority_actions
-                message_ids = data[0].split()
-                for msg_id in message_ids[-max_messages:]:
+                mailboxes = choose_mailboxes(self._list_mailbox_names(imap, parse_mailbox_name))
+                if not mailboxes:
+                    mailboxes = ["INBOX"]
+                for mailbox in mailboxes:
                     try:
-                        msg = self._fetch_message(imap, msg_id)
-                        if msg is None:
+                        status, _data = imap.select(mailbox, readonly=True)
+                        if status != "OK":
+                            unavailable += 1
+                            coverage["failed"].append(mailbox)
                             continue
-                        subject = self._decode_header(msg.get("Subject", ""))
-                        sender = self._decode_header(msg.get("From", ""))
-                        sent_at = self._decode_header(msg.get("Date") or "")
-                        body = self._extract_body(msg)
-                        category = self._categorize(subject, sender, body)
-                        expense = self._extract_expense(subject, sender, body)
-                        
-                        # Add financial detection (new layer on top)
-                        message_id = msg.get("Message-ID", f"unknown-{msg_id.decode()}")
-                        financial_detection = self._detect_financial_urgency(
-                            subject,
-                            sender,
-                            body,
-                            message_id,
-                            account.name,
-                            sent_at,
-                            account.username,
-                        )
-                        if financial_detection:
-                            priority_actions.append(financial_detection)
-                        
-                        categorized.append(
-                            {
-                                "subject": subject,
-                                "from": sender,
-                                "date": sent_at,
-                                "category": category,
-                                "expense": expense,
-                            }
-                        )
-                    except Exception as e:
-                        logger.warning(f"Error processing message {msg_id} in account {account.name}: {e}")
-                        continue
-        except Exception as e:
-            logger.error(f"Error connecting to account {account.name}: {e}")
-            
-        return categorized, priority_actions
+                        coverage["mailboxes"].append(mailbox)
+                        status, data = imap.search(None, "SINCE", since_date)
+                        if status != "OK" or not data or not data[0]:
+                            continue
+                        message_ids = data[0].split()[:2000]
+                        envelopes += len(message_ids)
+                        for header in self._fetch_headers(imap, message_ids):
+                            header["mailbox"] = mailbox
+                            key = header.get("message_id") or f"{mailbox}:{header.get('uid')}"
+                            if key and key not in seen:
+                                seen[key] = header
+                    except Exception as exc:
+                        unavailable += 1
+                        coverage["failed"].append(mailbox)
+                        logger.warning("Mailbox %s on %s failed: %s", mailbox, account.name, exc)
+                interesting = []
+                for header in seen.values():
+                    subject = header.get("subject") or ""
+                    if notable_ignore(subject) and len(ignored) < 8:
+                        ignored.append(subject)
+                    bucket = local_screen(subject, header.get("from") or "")
+                    if bucket:
+                        header["bucket"] = bucket
+                        interesting.append(header)
+                interesting.sort(key=lambda item: ("upcoming_bill", "renewal", "statement", "subscription").index(item["bucket"]))
+                for header in interesting[:body_cap]:
+                    opened += 1
+                    self._open_interesting(
+                        imap,
+                        account,
+                        header,
+                        categorized,
+                        priority_actions,
+                        findings,
+                        short_when,
+                        vendor_name,
+                    )
+        except Exception as exc:
+            coverage["error"] = str(exc)
+            unavailable += 1
+            logger.error("Error connecting to account %s: %s", account.name, exc)
+
+        return {
+            "categorized": categorized,
+            "priority_actions": priority_actions,
+            "findings": findings,
+            "ignored": ignored,
+            "coverage": coverage,
+            "envelopes": envelopes,
+            "unique": len(seen),
+            "opened": opened,
+            "unavailable": unavailable,
+        }
+
+    def _list_mailbox_names(self, imap: imaplib.IMAP4_SSL, parse_name) -> List[str]:
+        status, data = imap.list()
+        if status != "OK" or not data:
+            return []
+        names = []
+        for row in data:
+            if not row:
+                continue
+            text = row.decode("utf-8", errors="replace") if isinstance(row, bytes) else str(row)
+            name = parse_name(text)
+            if name:
+                names.append(name)
+        return names
+
+    def _fetch_headers(self, imap: imaplib.IMAP4_SSL, message_ids: List[bytes]) -> List[Dict[str, str]]:
+        headers: List[Dict[str, str]] = []
+        for start in range(0, len(message_ids), 40):
+            chunk = message_ids[start : start + 40]
+            query = b",".join(chunk)
+            status, data = imap.fetch(query, "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])")
+            if status != "OK" or not data:
+                continue
+            for item in data:
+                raw = item[1] if isinstance(item, tuple) and len(item) > 1 else None
+                if not isinstance(raw, (bytes, bytearray)):
+                    continue
+                msg = message_from_bytes(raw)
+                headers.append(
+                    {
+                        "uid": self._uid_from_fetch(item, chunk),
+                        "subject": self._decode_header(msg.get("Subject", "")),
+                        "from": self._decode_header(msg.get("From", "")),
+                        "date": self._decode_header(msg.get("Date") or ""),
+                        "message_id": self._decode_header(msg.get("Message-ID") or ""),
+                    }
+                )
+        return headers
+
+    @staticmethod
+    def _uid_from_fetch(item, chunk: List[bytes]) -> str:
+        prefix = item[0] if isinstance(item, tuple) else item
+        if isinstance(prefix, bytes):
+            token = prefix.split(b" ", 1)[0]
+            if token.isdigit():
+                return token.decode()
+        return chunk[0].decode(errors="replace") if chunk else ""
+
+    def _open_interesting(
+        self,
+        imap: imaplib.IMAP4_SSL,
+        account: MailAccount,
+        header: Dict[str, str],
+        categorized: List[Dict[str, Any]],
+        priority_actions: List[Dict[str, Any]],
+        findings: List[Dict[str, Any]],
+        short_when,
+        vendor_name,
+    ) -> None:
+        bucket = header.get("bucket") or ""
+        subject = header.get("subject") or ""
+        sender = header.get("from") or ""
+        sent_at = header.get("date") or ""
+        message_id = header.get("message_id") or f"unknown-{header.get('uid')}"
+        body = ""
+        uid = header.get("uid") or ""
+        if uid.isdigit():
+            mailbox = header.get("mailbox") or "INBOX"
+            imap.select(mailbox, readonly=True)
+            msg = self._fetch_message(imap, uid.encode())
+            if msg is not None:
+                body = self._extract_body(msg)
+                subject = self._decode_header(msg.get("Subject", "")) or subject
+                sender = self._decode_header(msg.get("From", "")) or sender
+                sent_at = self._decode_header(msg.get("Date") or "") or sent_at
+                message_id = self._decode_header(msg.get("Message-ID") or "") or message_id
+        note = subject
+        if not body:
+            note = f"{subject} (body not retrievable; no amount or due date)"
+        if body and bucket in {"upcoming_bill", "statement"}:
+            detection = self._detect_financial_urgency(
+                subject,
+                sender,
+                body,
+                message_id,
+                account.name,
+                sent_at,
+                account.username,
+                forced_kind="new_bill",
+            )
+            if detection:
+                priority_actions.append(detection)
+        if bucket in {"renewal", "statement", "subscription"}:
+            notice_id = self._queue_notice(
+                account, bucket, subject, sender, message_id, sent_at, note
+            )
+            if notice_id:
+                priority_actions.append(
+                    {
+                        "action_id": notice_id,
+                        "kind": "renewal_notice" if bucket == "renewal" else "mail_notice",
+                        "priority": 2 if bucket == "renewal" else 1,
+                    }
+                )
+        when = short_when(sent_at)
+        vendor = vendor_name(sender)
+        prefix = f"{when} — " if when else ""
+        findings.append(
+            {
+                "bucket": bucket,
+                "account": account.name,
+                "subject": subject,
+                "line": f"{prefix}{vendor} ({account.name}): {note}",
+            }
+        )
+        if body:
+            categorized.append(
+                {
+                    "subject": subject,
+                    "from": sender,
+                    "date": sent_at,
+                    "category": self._categorize(subject, sender, body),
+                    "expense": self._extract_expense(subject, sender, body),
+                }
+            )
+
+    def _queue_notice(
+        self,
+        account: MailAccount,
+        bucket: str,
+        subject: str,
+        sender: str,
+        message_id: str,
+        sent_at: str,
+        note: str,
+    ) -> str | None:
+        """A statement, subscription, or deactivation can be closed from Today."""
+        try:
+            from skills.mail_scan import queue_mail_notice
+
+            return queue_mail_notice(
+                str(resolve_db_path("khursheed.db")),
+                bucket=bucket,
+                account=account.name,
+                subject=subject,
+                sender=sender,
+                line=note,
+                message_id=message_id,
+                sent_at=sent_at,
+            )
+        except Exception as exc:
+            logger.warning("Mail notice could not be queued: %s", exc)
+            return None
 
     def _fetch_message(self, imap: imaplib.IMAP4_SSL, msg_id: bytes) -> Optional[Message]:
         status, data = imap.fetch(msg_id, "(RFC822)")
@@ -303,6 +521,7 @@ class SifterSkill(Skill):
         account_name: str,
         sent_at: str = "",
         account_email: str = "",
+        forced_kind: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Detect financial urgency in email and escalate to priority_inbox.
@@ -324,7 +543,7 @@ class SifterSkill(Skill):
                 logger.warning("Bill suppression check failed: %s", exc)
 
             # Stage 1: a watched biller is always read. Everyone else needs a keyword.
-            candidate_kind = self._candidate_kind(subject, sender, body)
+            candidate_kind = self._candidate_kind(subject, sender, body) or forced_kind
             if not candidate_kind:
                 return None
 
@@ -404,6 +623,10 @@ class SifterSkill(Skill):
         new_bill_keywords = [
             "invoice",
             "statement available",
+            "statement is available",
+            "account statement",
+            "upcoming bill",
+            "bill estimate",
             "amount due",
             "payment due",
             "your invoice",
@@ -449,6 +672,7 @@ class SifterSkill(Skill):
         # trial_ending keywords
         trial_keywords = [
             "trial ends", "trial expires", "free trial expires", "cancel before", "will be charged on",
+            "will be deactivated", "deactivated soon",
             "auto-renew on", "subscription renewal", "trial expiring", "trial period ends"
         ]
 

@@ -35,6 +35,7 @@ from desk_work import is_skill_request
 from desk_work import list_commitments
 from desk_work import list_pursuits
 from desk_work import submit_skill_request
+from skills.mail_scan import queue_mail_notice
 from chat_memory import load_turns
 from chat_memory import record_turn
 from executive_summary import _format_priority_alerts
@@ -169,7 +170,11 @@ def _inject_base_css() -> None:
             border: 1px solid rgba(0,0,0,0.08);
             border-radius: 12px;
         }
-        /* Mobile */
+        .st-key-desk-gate-card {
+            max-width: 26rem;
+            margin: 8vh auto 0;
+        }
+        /* Mobile: one column, full-width tap targets, tabs scroll sideways */
         @media (max-width: 640px) {
             .block-container {
                 padding-left: 1rem;
@@ -177,7 +182,28 @@ def _inject_base_css() -> None:
                 padding-top: 1rem;
             }
             h1 { font-size: 1.6rem !important; }
-            .stTabs [data-baseweb="tab-list"] { top: 2.75rem; }
+            [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
+                gap: 0.45rem !important;
+            }
+            [data-testid="stColumn"] {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+                min-width: 100% !important;
+            }
+            .stButton > button,
+            .stFormSubmitButton > button,
+            .stLinkButton > a {
+                min-height: 44px;
+            }
+            .stTabs [data-baseweb="tab-list"] {
+                flex-wrap: nowrap;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+            }
+            .stTabs [data-baseweb="tab"] {
+                flex: 0 0 auto;
+            }
         }
         </style>
         """,
@@ -245,8 +271,7 @@ def _require_password() -> None:
     if st.session_state.get("desk_open"):
         return
     _inject_base_css()
-    _, mid, _ = st.columns([1, 2, 1])
-    with mid:
+    with st.container(key="desk-gate-card"):
         st.markdown("## Enaam")
         st.caption("Your chief of staff for mail, leads, and content.")
         with st.form("desk-gate"):
@@ -345,6 +370,53 @@ def _render_bill_question(db_path: str, action: dict, key_prefix: str) -> None:
         st.rerun()
 
 
+def _latest_scan(manager: Manager) -> dict:
+    row = manager._connection.execute(
+        """
+        SELECT result_json
+        FROM skill_runs
+        WHERE skill_name = 'sifter'
+        ORDER BY executed_at DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None or not row[0]:
+        return {}
+    try:
+        payload = json.loads(row[0])
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    scan = payload.get("scan") or {}
+    if not scan.get("report"):
+        scan["report"] = payload.get("scan_report") or ""
+    return scan
+
+
+def _notice_is_open(db_path: str, action_id: str) -> bool:
+    import sqlite3
+
+    row = sqlite3.connect(db_path, timeout=30.0).execute(
+        "SELECT status FROM pending_actions WHERE action_id = ?",
+        (action_id,),
+    ).fetchone()
+    return bool(row and row[0] == "pending")
+
+
+def _render_notice_buttons(db_path: str, action_id: str, key_prefix: str) -> None:
+    """Close a statement, subscription, or renewal. Nothing here sends mail."""
+    done, later, dismiss = st.columns(3)
+    if done.button("Done", key=f"{key_prefix}-done", use_container_width=True):
+        result = approve_and_execute(db_path, action_id, reviewed_by="desk")
+        st.session_state.last_ack = result.get("message") or "Marked done."
+        st.rerun()
+    if later.button("Not yet", key=f"{key_prefix}-later", use_container_width=True):
+        st.toast("Still open. It stays on this list.")
+    if dismiss.button("Not this", key=f"{key_prefix}-dismiss", use_container_width=True):
+        result = reject_not_a_bill(db_path, action_id, reviewed_by="desk")
+        st.session_state.last_ack = result.get("message") or "Dismissed."
+        st.rerun()
+
+
 def _open_bills(db_path: str) -> list[dict]:
     pending = list_open_priority_actions(min_priority=0, db_path=db_path)
     return [action for action in pending if action.get("action_type") in BILL_KINDS]
@@ -404,6 +476,69 @@ def _render_saved_leads(db_path: str, loops: list[dict]) -> None:
             st.rerun()
 
 
+def _bill_for_finding(bills: list[dict], finding: dict) -> dict | None:
+    subject = str(finding.get("subject") or "").strip().lower()
+    if not subject:
+        return None
+    for bill in bills:
+        payload = _parse_payload(bill.get("payload_json"))
+        stored = str(payload.get("subject") or bill.get("description") or "").strip().lower()
+        if stored and (stored == subject or subject in stored or stored in subject):
+            return bill
+    return None
+
+
+def _render_mail_scan(manager: Manager, db_path: str) -> None:
+    """The scan list itself is what you address. The prose report stays folded away."""
+    from skills.mail_scan import BUCKET_LABELS
+    from skills.mail_scan import BUCKET_ORDER
+
+    scan = _latest_scan(manager)
+    findings = scan.get("findings") or []
+    report = str(scan.get("report") or "")
+    coverage = report.split("\n", 1)[0] if report else ""
+    bills = _open_bills(db_path)
+    with st.expander("Mail scan", expanded=bool(findings or report)):
+        if coverage:
+            st.caption(coverage)
+        if not findings:
+            st.caption("Check mail to review the bill folders. The morning brief keeps only the short list.")
+            return
+        grouped: dict[str, list[dict]] = {bucket: [] for bucket in BUCKET_ORDER}
+        for finding in findings:
+            grouped.setdefault(finding.get("bucket") or "", []).append(finding)
+        index = 0
+        for bucket in BUCKET_ORDER:
+            rows = grouped.get(bucket) or []
+            if not rows:
+                continue
+            st.markdown(f"**{BUCKET_LABELS.get(bucket, bucket)}**")
+            for finding in rows:
+                index += 1
+                st.markdown(finding.get("line") or finding.get("subject") or "Message")
+                if bucket == "upcoming_bill":
+                    bill = _bill_for_finding(bills, finding)
+                    if bill:
+                        _render_bill_question(db_path, bill, f"scan-{index}")
+                    else:
+                        st.caption("No open bill was saved for this message.")
+                    continue
+                action_id = queue_mail_notice(
+                    db_path,
+                    bucket=bucket,
+                    account=str(finding.get("account") or ""),
+                    subject=str(finding.get("subject") or ""),
+                    line=str(finding.get("line") or ""),
+                )
+                if not action_id or not _notice_is_open(db_path, action_id):
+                    st.caption("Already addressed.")
+                    continue
+                _render_notice_buttons(db_path, action_id, f"scan-{index}-{action_id}")
+        if report:
+            with st.expander("Scan notes", expanded=False):
+                st.markdown(report)
+
+
 def _render_today(manager: Manager) -> None:
     """Each section is a collapsible card; urgent decisions open by default."""
     db_path = str(manager._db_path)
@@ -412,6 +547,8 @@ def _render_today(manager: Manager) -> None:
     bills = _open_bills(db_path)
     loops = list_open_loops(db_path=db_path, limit=50)
     brief = st.session_state.get("brief")
+
+    _render_mail_scan(manager, db_path)
 
     with st.expander(f"Bills ({len(bills)})", expanded=bool(bills)):
         if not bills:
@@ -422,10 +559,14 @@ def _render_today(manager: Manager) -> None:
             _render_bill_question(db_path, bill, "today")
 
     with st.expander(f"Needs a decision ({len(alerts)})", expanded=bool(alerts)):
-        if alerts:
-            st.markdown(_format_priority_alerts(alerts))
-        else:
+        if not alerts:
             st.caption("Inbox is clear — nothing needs a decision right now.")
+        for alert in alerts:
+            st.markdown(f"**{alert.get('title') or 'Item'}**")
+            if alert.get("action_type") in {"renewal_notice", "mail_notice"}:
+                _render_notice_buttons(db_path, alert["action_id"], f"decision-{alert.get('action_id')}")
+            else:
+                st.markdown(_format_priority_alerts([alert]))
 
     commitments = list_commitments(db_path)
     with st.expander(f"Commitments ({len(commitments)})", expanded=bool(commitments)):
@@ -753,6 +894,10 @@ def _render_review_queue(manager: Manager) -> None:
             elif action_type == "skill_request":
                 _render_skill_request(db_path, action)
                 continue
+            elif action_type in {"renewal_notice", "mail_notice"}:
+                st.markdown(action.get("description") or "")
+                _render_notice_buttons(db_path, action["action_id"], f"review-{action.get('action_id')}")
+                continue
             elif action_type in BILL_KINDS:
                 _render_bill_question(db_path, action, "review")
                 continue
@@ -1048,7 +1193,7 @@ def _render_header(manager: Manager) -> None:
         st.session_state.brief = generate_executive_summary(manager, notifier)
         st.toast("Brief refreshed")
     if c3.button("Check mail now", use_container_width=True, icon=":material/mail:"):
-        with st.spinner("Checking the three mailboxes."):
+        with st.spinner("Checking mail. Headers first, then the bills and renewals."):
             _run_skill_now(
                 manager,
                 "sifter",
