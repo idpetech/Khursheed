@@ -155,18 +155,38 @@ def _inject_base_css() -> None:
         ) [data-testid="stBottom"] {
             display: block;
         }
-        /* Status chips */
-        .enaam-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.25rem 0 1rem; }
-        .enaam-chip {
-            font-size: 0.8rem;
-            padding: 0.22rem 0.65rem;
+        /* Status chips are buttons. They open the tab that holds the action. */
+        .st-key-enaam-chips { margin: 0.25rem 0 1rem; }
+        .st-key-enaam-chips [data-testid="stHorizontalBlock"] {
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            align-items: center;
+        }
+        .st-key-enaam-chips [data-testid="column"] {
+            width: fit-content !important;
+            flex: 0 0 auto !important;
+        }
+        .st-key-enaam-chips button {
+            width: auto !important;
+            min-height: 2rem;
+            padding: 0.2rem 0.7rem !important;
             border-radius: 999px;
             border: 1px solid rgba(0,0,0,0.12);
-            color: #44403c;
             background: transparent;
+            color: #44403c;
+            font-size: 0.8rem;
+            font-weight: 500;
             white-space: nowrap;
         }
-        .enaam-chip.accent { border-color: #1f4b3a; color: #1f4b3a; font-weight: 600; }
+        .st-key-enaam-chips button:hover {
+            border-color: #1f4b3a;
+            color: #1f4b3a;
+        }
+        .st-key-enaam-chips [class*="st-key-accent-"] button {
+            border-color: #1f4b3a;
+            color: #1f4b3a;
+            font-weight: 600;
+        }
         /* Cards: give expanders a flat, structured container */
         [data-testid="stExpander"] details {
             border: 1px solid rgba(0,0,0,0.08);
@@ -213,9 +233,79 @@ def _inject_base_css() -> None:
     )
 
 
-def _chip(label: str, accent: bool = False) -> str:
-    cls = "enaam-chip accent" if accent else "enaam-chip"
-    return f'<span class="{cls}">{label}</span>'
+DESK_TABS = ("Ask Enaam", "Today", "To review", "Content", "Task log")
+CHIP_TARGETS = {
+    "decisions": ("To review", "decisions"),
+    "review": ("To review", "review"),
+    "leads": ("Today", "leads"),
+    "brief": ("Today", "brief"),
+}
+
+
+def _open_from_chip(target: str) -> None:
+    """Remember which tab and which block a status chip should open."""
+    tab, anchor = CHIP_TARGETS[target]
+    st.session_state["desk_tab"] = tab
+    st.session_state["desk_scroll"] = anchor
+
+
+def _arriving(anchor: str) -> bool:
+    return st.session_state.get("desk_scroll") == anchor
+
+
+def _mark(anchor: str) -> None:
+    st.html(f'<div id="desk-{anchor}" style="height:1px;scroll-margin-top:12px"></div>')
+
+
+def _scroll_to_chip() -> None:
+    """Scroll the desk pane to the block the chip named.
+
+    The tab is often still hidden on the first frame, and Streamlit scrolls
+    a nested pane rather than the window. Retry until the block is on screen.
+    """
+    anchor = st.session_state.get("desk_scroll") or ""
+    if anchor not in CHIP_TARGETS:
+        return
+    st.session_state["desk_scroll"] = ""
+    st.html(
+        f"""
+        <script>
+        (function () {{
+          const id = "desk-{anchor}";
+          function jump() {{
+            const el = document.getElementById(id);
+            if (!el || el.getClientRects().length === 0) return;
+            let node = el.parentElement;
+            while (node) {{
+              const overflow = getComputedStyle(node).overflowY;
+              if ((overflow === "auto" || overflow === "scroll") && node.scrollHeight > node.clientHeight + 20) {{
+                const top = node.getBoundingClientRect().top;
+                let delta = el.getBoundingClientRect().top - top - 12;
+                const room = node.scrollHeight - node.clientHeight - node.scrollTop;
+                if (delta > room + 4) {{
+                  const host = node.querySelector('[data-testid="stMainBlockContainer"]') || node;
+                  let pad = document.getElementById("desk-scroll-pad");
+                  if (!pad) {{
+                    pad = document.createElement("div");
+                    pad.id = "desk-scroll-pad";
+                    host.appendChild(pad);
+                  }}
+                  const space = Math.ceil(node.clientHeight) + "px";
+                  pad.style.cssText = "height:" + space + ";min-height:" + space + ";flex-shrink:0";
+                  delta = el.getBoundingClientRect().top - top - 12;
+                }}
+                if (Math.abs(delta) > 4) node.scrollTop += delta;
+                return;
+              }}
+              node = node.parentElement;
+            }}
+          }}
+          [0, 80, 250, 600, 1100].forEach((ms) => setTimeout(jump, ms));
+        }})();
+        </script>
+        """,
+        unsafe_allow_javascript=True,
+    )
 
 
 def _render_chips(manager: Manager) -> None:
@@ -224,14 +314,20 @@ def _render_chips(manager: Manager) -> None:
     review = len(list_open_priority_actions(min_priority=0, db_path=db_path))
     followups = len(list_open_loops(db_path=db_path, limit=50))
     brief_ready = bool(st.session_state.get("brief"))
-
     chips = [
-        _chip(f"{decisions} need you", accent=decisions > 0),
-        _chip(f"{review} to review", accent=review > 0),
-        _chip(f"{followups} saved leads"),
-        _chip("brief ready" if brief_ready else "no brief yet", accent=brief_ready),
+        (f"{decisions} need you", "decisions", decisions > 0),
+        (f"{review} to review", "review", review > 0),
+        (f"{followups} saved leads", "leads", False),
+        ("brief ready" if brief_ready else "no brief yet", "brief", brief_ready),
     ]
-    st.markdown('<div class="enaam-chips">' + "".join(chips) + "</div>", unsafe_allow_html=True)
+    with st.container(key="enaam-chips"):
+        columns = st.columns(len(chips))
+        for column, (label, target, accent) in zip(columns, chips):
+            tone = "accent" if accent else "plain"
+            with column.container(key=f"{tone}-{target}"):
+                if st.button(label, key=f"chip-{target}"):
+                    _open_from_chip(target)
+                    st.rerun()
 
 
 def _greeting() -> str:
@@ -598,14 +694,16 @@ def _render_today(manager: Manager) -> None:
             st.caption("Keep a single-employer role from To review and it will show here.")
         _render_pursuits(manager, pursuits)
 
-    with st.expander(f"Saved leads ({len(loops)})", expanded=False):
+    _mark("leads")
+    with st.expander(f"Saved leads ({len(loops)})", expanded=_arriving("leads")):
         if not loops:
             st.caption("No saved leads.")
         else:
             st.caption("Pages from the fractional CTO search. Open one, or clear it.")
             _render_saved_leads(db_path, loops)
 
-    with st.expander("Daily brief", expanded=False):
+    _mark("brief")
+    with st.expander("Daily brief", expanded=_arriving("brief")):
         if brief:
             st.markdown(brief)
         else:
@@ -890,13 +988,24 @@ def _render_review_queue(manager: Manager) -> None:
         st.caption("Nothing is waiting. You're all caught up.")
         return
     st.caption(f"{len(pending)} waiting — expand an item to review it.")
-    for action in pending:
+    _mark("review")
+    marked_decision = False
+    for index, action in enumerate(pending):
+        priority = int(action.get("priority") or 0)
+        if _arriving("decisions") and priority >= 2 and not marked_decision:
+            _mark("decisions")
+            marked_decision = True
+        action_type = action.get("action_type") or ""
+        opened = action_type == "linkedin_post_draft"
+        if _arriving("review") and index == 0:
+            opened = True
+        if _arriving("decisions") and priority >= 2:
+            opened = True
         origin = mail_origin(action)
         label = action.get("title") or "(untitled)"
         if origin["inbox"]:
             label = f"{label} · {origin['inbox']}"
-        action_type = action.get("action_type") or ""
-        with st.expander(label, expanded=(action_type == "linkedin_post_draft")):
+        with st.expander(label, expanded=opened):
             st.caption(action_type)
             _render_mail_origin(action)
             if action_type == "linkedin_post_draft":
@@ -1264,7 +1373,7 @@ def main() -> None:
 
     _render_header(manager)
 
-    tabs = st.tabs(["Ask Enaam", "Today", "To review", "Content", "Task log"])
+    tabs = st.tabs(DESK_TABS, key="desk_tab", default="Ask Enaam", on_change="rerun")
     with tabs[0]:
         _render_conversation(manager, agent)
     with tabs[1]:
@@ -1275,6 +1384,8 @@ def main() -> None:
         _render_theme_queue(manager)
     with tabs[4]:
         _render_runs(manager)
+
+    _scroll_to_chip()
 
     prompt = st.chat_input("Ask Enaam")
     if prompt:

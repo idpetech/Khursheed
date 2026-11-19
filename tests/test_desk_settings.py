@@ -207,6 +207,48 @@ with st.container(key="config-scroll"):
         self.assertGreater(len(sent), 1)
         self.assertNotIn("token", "".join(sent))
 
+    def test_a_status_chip_opens_the_tab_that_holds_the_action(self):
+        from streamlit.testing.v1 import AppTest
+
+        root = str(Path(__file__).resolve().parents[1])
+        script = f"""
+import sys
+sys.path.insert(0, {root!r})
+import streamlit as st
+from hey_eman_app import _open_from_chip
+
+if st.button("1 need you", key="chip-decisions"):
+    _open_from_chip("decisions")
+    st.rerun()
+if st.button("13 saved leads", key="chip-leads"):
+    _open_from_chip("leads")
+    st.rerun()
+tabs = st.tabs(
+    ["Ask Enaam", "Today", "To review", "Content", "Task log"],
+    key="desk_tab",
+    default="Ask Enaam",
+    on_change="rerun",
+)
+st.write("tab:" + str(st.session_state.get("desk_tab")))
+st.write("scroll:" + str(st.session_state.get("desk_scroll")))
+st.write("review-open:" + str(bool(tabs[2].open)))
+st.write("today-open:" + str(bool(tabs[1].open)))
+"""
+        app = AppTest.from_string(script, default_timeout=20)
+        app.run()
+        need = next(button for button in app.button if button.label == "1 need you")
+        need.click().run()
+        text = "\n".join(item.value for item in app.markdown)
+        self.assertIn("tab:To review", text)
+        self.assertIn("scroll:decisions", text)
+        self.assertIn("review-open:True", text)
+        leads = next(button for button in app.button if button.label == "13 saved leads")
+        leads.click().run()
+        text = "\n".join(item.value for item in app.markdown)
+        self.assertIn("tab:Today", text)
+        self.assertIn("scroll:leads", text)
+        self.assertIn("today-open:True", text)
+
 
 if __name__ == "__main__":
     unittest.main()
