@@ -123,12 +123,15 @@ def run_morning_skills(
     """
     moment = now or datetime.now().astimezone()
     ran: list[str] = []
+    paused = _research_paused(manager, moment)
     for task in tasks:
         interval = task.get("interval_days")
         interval_days = 1 if interval is None else max(int(interval), 1)
         payload = dict(task.get("payload") or {})
         task_id = task["id"]
         for skill in task.get("skills") or []:
+            if paused and _search_is_paused(skill):
+                continue
             executed_at, status, result_json = _latest_run(manager, task_id, skill)
             if not skill_is_due(executed_at, status, result_json, skill, interval_days, moment):
                 continue
@@ -138,6 +141,22 @@ def run_morning_skills(
                 logger.exception("Morning skill %s failed for %s", skill, task_id)
             ran.append(f"{task_id}:{skill}")
     return ran
+
+
+def _research_paused(manager: Manager, moment: datetime) -> bool:
+    try:
+        from desk_work import morning_focus
+
+        return bool(morning_focus(str(manager._db_path), moment.date())["pause_research"])
+    except Exception:
+        logger.exception("Morning focus unavailable; research will run")
+        return False
+
+
+def _search_is_paused(skill: str) -> bool:
+    from desk_work import PAUSED_RESEARCH
+
+    return skill in PAUSED_RESEARCH
 
 
 def skill_is_due(

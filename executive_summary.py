@@ -59,17 +59,18 @@ def generate_executive_summary(
     except Exception:
         pass
 
-    report = "\n".join(
-        [
-            f"# Executive Summary - {timestamp.date().isoformat()}",
+    from desk_work import morning_focus
+
+    focus_day = timestamp.astimezone().date() if timestamp.tzinfo else timestamp.date()
+    focus = morning_focus(db_path, focus_day)
+    if focus["pause_research"]:
+        research = [
+            "## Research",
+            "_Research is waiting until the open role has a date._",
             "",
-            "## Priority Alerts",
-            _format_priority_alerts(priority_alerts),
-            "",
-            "## Pending Bills",
-            pending_bills,
-            "",
-            *_mail_scan_section(runs),
+        ]
+    else:
+        research = [
             "## Top Leads",
             _format_leads(leads, window, _research_error(runs, "lead_scout")),
             "",
@@ -81,6 +82,23 @@ def generate_executive_summary(
             "## Top ICP Companies",
             icp_text,
             "",
+        ]
+    today_lines = "\n".join(f"- {line}" for line in focus["lines"])
+    report = "\n".join(
+        [
+            f"# Executive Summary - {timestamp.date().isoformat()}",
+            "",
+            "## Today",
+            today_lines,
+            "",
+            "## Priority Alerts",
+            _format_priority_alerts(priority_alerts),
+            "",
+            "## Pending Bills",
+            pending_bills,
+            "",
+            *_mail_scan_section(runs),
+            *research,
             "## Open Loops",
             _format_open_loops(open_loops),
             "",
@@ -103,13 +121,18 @@ def mobile_update(report: str) -> str:
             date = line.split(" - ", 1)[1].strip()
             break
     parts = [f"Enaam · {date}", ""]
+    if sections.get("Today"):
+        parts.extend(_mobile_lines("Today", sections.get("Today"), ""))
     parts.extend(_mobile_lines("Bills", sections.get("Pending Bills"), "No bills."))
     if sections.get("Mail scan"):
         parts.extend(_mobile_lines("Mail", sections.get("Mail scan"), ""))
     parts.extend(_mobile_lines("Needs you", sections.get("Priority Alerts"), "Nothing needs you."))
-    parts.extend(_mobile_lines("Leads", sections.get("Top Leads"), "No new leads."))
-    parts.extend(_mobile_lines("CTO", sections.get("Fractional CTO Opportunities"), "No new CTO roles."))
-    parts.extend(_mobile_lines("ICP", sections.get("Top ICP Companies"), "No ICP companies."))
+    if sections.get("Research"):
+        parts.extend(_mobile_lines("Research", sections.get("Research"), ""))
+    else:
+        parts.extend(_mobile_lines("Leads", sections.get("Top Leads"), "No new leads."))
+        parts.extend(_mobile_lines("CTO", sections.get("Fractional CTO Opportunities"), "No new CTO roles."))
+        parts.extend(_mobile_lines("ICP", sections.get("Top ICP Companies"), "No ICP companies."))
     for label, heading in (
         ("Post", "This week"),
         ("Meeting", "Next meeting"),

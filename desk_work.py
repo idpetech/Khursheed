@@ -12,6 +12,7 @@ import re
 import sqlite3
 import uuid
 from datetime import UTC
+from datetime import date
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,10 +38,13 @@ CREATE TABLE IF NOT EXISTS pursuits (
     title TEXT NOT NULL,
     url TEXT NOT NULL DEFAULT '',
     stage TEXT NOT NULL,
+    next_on TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 )
 """
+
+PAUSED_RESEARCH = frozenset({"lead_scout", "cto_radar", "icp_finder", "icp_prospector"})
 
 REQUESTS_SQL = """
 CREATE TABLE IF NOT EXISTS skill_requests (
@@ -86,6 +90,7 @@ def ensure_desk_work(db_path: str | Path) -> Path:
             conn.execute(COMMITMENTS_SQL)
             conn.execute(PURSUITS_SQL)
             conn.execute(REQUESTS_SQL)
+            _ensure_pursuit_date(conn)
     finally:
         conn.close()
     return resolved
@@ -211,7 +216,7 @@ def list_pursuits(db_path: str | Path) -> list[dict[str, Any]]:
     try:
         rows = conn.execute(
             """
-            SELECT pursuit_id, title, url, stage, created_at
+            SELECT pursuit_id, title, url, stage, next_on, created_at
             FROM pursuits
             WHERE stage = 'kept'
             ORDER BY created_at DESC
@@ -220,6 +225,145 @@ def list_pursuits(db_path: str | Path) -> list[dict[str, Any]]:
     finally:
         conn.close()
     return [dict(row) for row in rows]
+
+
+def set_pursuit_date(db_path: str | Path, pursuit_id: str, next_on: str) -> dict[str, Any]:
+    """Store the next follow-up date for a kept role. An empty value clears it."""
+    text = (next_on or "").strip()
+    if text and _parse_date(text) is None:
+        return {"status": "error", "message": "Use a date like 2026-11-20."}
+    resolved = ensure_desk_work(db_path)
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE pursuits
+                SET next_on = ?, updated_at = ?
+                WHERE pursuit_id = ? AND stage = 'kept'
+                """,
+                (text, now, pursuit_id),
+            )
+            saved = cursor.rowcount > 0
+    finally:
+        conn.close()
+    if not saved:
+        return {"status": "error", "message": "That role is no longer kept."}
+    if text:
+        return {"status": "ok", "message": f"Next step set for {text}."}
+    return {"status": "ok", "message": "Date cleared."}
+
+
+def morning_focus(db_path: str | Path, today: date | None = None) -> dict[str, Any]:
+    """The one or two lines the morning leads with, and whether research waits."""
+    moment = today or datetime.now().astimezone().date()
+    pursuits = list_pursuits(db_path)
+    undated = [row for row in pursuits if not str(row.get("next_on") or "").strip()]
+    dated = []
+    for row in pursuits:
+        parsed = _parse_date(str(row.get("next_on") or ""))
+        if parsed is not None:
+            dated.append((parsed, row))
+    dated.sort(key=lambda item: (item[0], str(item[1].get("title") or "")))
+    actions = _open_actions(db_path)
+    if undated:
+        role_line = "Set a date on a kept role."
+        pause = True
+    elif dated:
+        when, row = dated[0]
+        title = row.get("title") or "Role"
+        stamp = when.isoformat()
+        if when <= moment:
+            role_line = f"Follow up: {title}, due {stamp}."
+        else:
+            role_line = f"Next follow-up: {title} on {stamp}."
+        pause = False
+    elif any(action.get("action_type") == "role_candidate" for action in actions):
+        role_line = "Keep or skip the role waiting in To review."
+        pause = True
+    else:
+        role_line = "No kept role yet."
+        pause = False
+    bill_line = _urgent_bill_line(actions, moment)
+    lines = [bill_line, role_line] if bill_line else [role_line]
+    return {
+        "lines": lines,
+        "pause_research": pause,
+        "bill_line": bill_line,
+        "role_line": role_line,
+    }
+
+
+def _ensure_pursuit_date(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(pursuits)")}
+    if "next_on" not in columns:
+        conn.execute("ALTER TABLE pursuits ADD COLUMN next_on TEXT NOT NULL DEFAULT ''")
+
+
+def _parse_date(value: str) -> date | None:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _open_actions(db_path: str | Path) -> list[dict[str, Any]]:
+    try:
+        from priority_inbox import list_open_priority_actions
+
+        return list_open_priority_actions(min_priority=0, db_path=str(db_path))
+    except Exception:
+        return []
+
+
+def _urgent_bill_line(actions: list[dict[str, Any]], today: date) -> str:
+    from priority_inbox import BILL_KINDS
+    from priority_inbox import priority_for_bill
+
+    current = datetime(today.year, today.month, today.day, 12, 0, 0)
+    urgent: list[tuple[str, dict[str, Any]]] = []
+    for action in actions:
+        kind = str(action.get("action_type") or "")
+        if kind not in BILL_KINDS:
+            continue
+        payload = _action_payload(action)
+        priority, _expires = priority_for_bill(kind, payload.get("due_date"), now=current)
+        if priority < 3:
+            continue
+        due = str(payload.get("due_date") or "")
+        urgent.append((due or "0000-00-00", action))
+    if not urgent:
+        return ""
+    urgent.sort(key=lambda item: item[0])
+    return _bill_sentence(urgent[0][1], len(urgent) - 1)
+
+
+def _bill_sentence(action: dict[str, Any], extra: int) -> str:
+    payload = _action_payload(action)
+    vendor = str(payload.get("vendor") or "").strip()
+    title = str(action.get("title") or "Bill").strip()
+    label = vendor or title
+    due = str(payload.get("due_date") or "").strip()
+    text = f"Pay or close: {label}"
+    if due:
+        text += f", due {due}"
+    if extra == 1:
+        text += ", and 1 other bill"
+    elif extra > 1:
+        text += f", and {extra} other bills"
+    return text + "."
+
+
+def _action_payload(action: dict[str, Any]) -> dict[str, Any]:
+    raw = action.get("payload_json") or action.get("payload") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def propose_skill(ask: str) -> dict[str, Any]:

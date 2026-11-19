@@ -34,6 +34,8 @@ from desk_work import decide_skill_request
 from desk_work import is_skill_request
 from desk_work import list_commitments
 from desk_work import list_pursuits
+from desk_work import morning_focus
+from desk_work import set_pursuit_date
 from desk_work import submit_skill_request
 from skills.mail_scan import queue_mail_notice
 from chat_memory import load_turns
@@ -441,20 +443,30 @@ def _render_commitments(db_path: str, commitments: list[dict]) -> None:
 
 
 def _render_pursuits(manager: Manager, pursuits: list[dict]) -> None:
+    db_path = str(manager._db_path)
     for pursuit in pursuits:
-        st.markdown(f"**{pursuit.get('title') or 'Role'}**")
+        pursuit_id = str(pursuit.get("pursuit_id") or "")
+        title = pursuit.get("title") or "Role"
+        when = pursuit.get("next_on") or ""
+        st.markdown(f"**{title}**" + (f" · next {when}" if when else " · no date"))
         url = str(pursuit.get("url") or "")
         open_link, draft = st.columns(2)
         if url:
             open_link.link_button("Open", url, use_container_width=True)
-        if draft.button("Draft a note", key=f"pursuit-note-{pursuit.get('pursuit_id')}", use_container_width=True):
+        if draft.button("Draft a note", key=f"pursuit-note-{pursuit_id}", use_container_width=True):
             _run_skill_now(
                 manager,
                 "outreach_draft",
-                {"title": pursuit.get("title") or "", "url": url},
+                {"title": title, "url": url},
             )
             st.session_state.last_ack = "Draft is in To review. It has not been sent."
             st.rerun()
+        with st.form(f"pursuit-date-{pursuit_id}"):
+            next_on = st.text_input("Next step", value=when, placeholder="2026-11-20")
+            if st.form_submit_button("Save date"):
+                result = set_pursuit_date(db_path, pursuit_id, next_on)
+                st.session_state.last_ack = result.get("message") or "Saved."
+                st.rerun()
 
 
 def _render_saved_leads(db_path: str, loops: list[dict]) -> None:
@@ -547,6 +559,13 @@ def _render_today(manager: Manager) -> None:
     bills = _open_bills(db_path)
     loops = list_open_loops(db_path=db_path, limit=50)
     brief = st.session_state.get("brief")
+
+    focus = morning_focus(db_path)
+    st.markdown("**Today**")
+    for line in focus["lines"]:
+        st.markdown(line)
+    if focus["pause_research"]:
+        st.caption("Research is waiting until the open role has a date.")
 
     _render_mail_scan(manager, db_path)
 
