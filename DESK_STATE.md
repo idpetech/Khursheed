@@ -22,7 +22,7 @@ Pick these up only after the dated follow-up has been the morning habit. Do the 
 5. Richer memory than `config/principal.json`, once the same judgment is being repeated and the file cannot hold it.
 6. Remove demo skills, the second scheduler, and the old Enaam tree, once the morning action is trustworthy. This is deletion, not a new feature.
 
-If the morning brief should send from this Mac, the crontab is not installed. On Railway the desk already loops `morning_watch.py` and must not get a second cron.
+The Mac morning cron was removed on 19 Nov 2026. It had been `* * * * *` running `scripts/morning_run.py`. The Monday 09:00 `weekly_summary.py` cron is still installed. On Railway the desk still loops `morning_watch.py`; that is not a cron, and it must not get one.
 
 ## Do not build
 
