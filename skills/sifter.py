@@ -125,6 +125,7 @@ class SifterSkill(Skill):
         from skills.mail_scan import local_screen
         from skills.mail_scan import notable_ignore
         from skills.mail_scan import parse_mailbox_name
+        from skills.mail_scan import quote_mailbox
         from skills.mail_scan import short_when
         from skills.mail_scan import vendor_name
 
@@ -148,10 +149,17 @@ class SifterSkill(Skill):
                     mailboxes = ["INBOX"]
                 for mailbox in mailboxes:
                     try:
-                        status, _data = imap.select(mailbox, readonly=True)
+                        status, data = imap.select(quote_mailbox(mailbox), readonly=True)
                         if status != "OK":
                             unavailable += 1
                             coverage["failed"].append(mailbox)
+                            logger.warning(
+                                "Mailbox %s on %s could not be opened: %s %s",
+                                mailbox,
+                                account.name,
+                                status,
+                                data,
+                            )
                             continue
                         coverage["mailboxes"].append(mailbox)
                         status, data = imap.search(None, "SINCE", since_date)
@@ -270,11 +278,13 @@ class SifterSkill(Skill):
         sender = header.get("from") or ""
         sent_at = header.get("date") or ""
         message_id = header.get("message_id") or f"unknown-{header.get('uid')}"
+        from skills.mail_scan import quote_mailbox
+
         body = ""
         uid = header.get("uid") or ""
         if uid.isdigit():
             mailbox = header.get("mailbox") or "INBOX"
-            imap.select(mailbox, readonly=True)
+            imap.select(quote_mailbox(mailbox), readonly=True)
             msg = self._fetch_message(imap, uid.encode())
             if msg is not None:
                 body = self._extract_body(msg)

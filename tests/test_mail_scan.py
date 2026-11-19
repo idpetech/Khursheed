@@ -9,6 +9,7 @@ from skills.mail_scan import format_scan_report
 from skills.mail_scan import local_screen
 from skills.mail_scan import parse_mailbox_name
 from skills.mail_scan import queue_mail_notice
+from skills.mail_scan import quote_mailbox
 from skills.sifter import MailAccount
 from skills.sifter import SifterSkill
 
@@ -27,6 +28,12 @@ class MailScanTests(unittest.TestCase):
             choose_mailboxes(names),
             ["INBOX", "[Gmail]/All Mail", "[Gmail]/Receipts", "Archive"],
         )
+
+    def test_a_mailbox_with_a_space_is_quoted_for_imap(self):
+        self.assertEqual(quote_mailbox("[Gmail]/All Mail"), '"[Gmail]/All Mail"')
+        self.assertEqual(quote_mailbox("[Gmail]/Receipts"), '"[Gmail]/Receipts"')
+        self.assertEqual(quote_mailbox("INBOX"), "INBOX")
+        self.assertEqual(quote_mailbox("Archive"), "Archive")
 
     def test_the_better_scan_subjects_land_in_the_right_buckets(self):
         cases = [
@@ -110,6 +117,30 @@ class _FakeImap:
         return "OK", [(b"2 (RFC822 {1}", _full("Upcoming bill estimate $418.13 due 2026-12-10"))]
 
 
+class _GmailImap(_FakeImap):
+    def __init__(self):
+        self.selected = []
+
+    def list(self):
+        return "OK", [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren) "/" "[Gmail]/All Mail"',
+            b'(\\HasNoChildren) "/" "[Gmail]/Receipts"',
+        ]
+
+    def select(self, mailbox, readonly=True):
+        self.selected.append(mailbox)
+        if mailbox == "[Gmail]/All Mail":
+            return "NO", [b"[NONEXISTENT] Unknown Mailbox"]
+        self.mailbox = "INBOX" if mailbox == "INBOX" else ""
+        return "OK", [b"0"]
+
+    def search(self, *_args):
+        if getattr(self, "mailbox", "") == "INBOX":
+            return "OK", [b""]
+        return "OK", [b""]
+
+
 def _header(uid: str, subject: str, sender: str, message_id: str = "") -> bytes:
     lines = [
         f"Subject: {subject}",
@@ -185,3 +216,15 @@ class SifterScanTests(unittest.TestCase):
         self.assertEqual(result["scan"]["coverage"]["envelopes"], 3)
         self.assertIn("Archive", result["scan"]["coverage"]["accounts"][0]["mailboxes"])
         self.assertNotIn("Bulk", result["scan"]["coverage"]["accounts"][0]["mailboxes"])
+
+    @patch("skills.sifter.imaplib.IMAP4_SSL")
+    def test_gmail_all_mail_is_selected_with_quotes(self, ssl):
+        imap = _GmailImap()
+        ssl.return_value = imap
+        skill = SifterSkill(accounts=[MailAccount("gmail", "imap.gmail.com", "me@gmail.com", "secret")])
+        with patch.dict("os.environ", {"OPENAI_API_KEY": ""}):
+            result = skill.run({"payload": {"max_messages": 5, "lookback_days": 2}})
+        account = result["scan"]["coverage"]["accounts"][0]
+        self.assertIn("[Gmail]/All Mail", account["mailboxes"])
+        self.assertEqual(account["failed"], [])
+        self.assertIn('"[Gmail]/All Mail"', imap.selected)

@@ -30,6 +30,9 @@ _IGNORE = (
 )
 
 
+_ATOM = re.compile(r"^[^\x00-\x20(){%*\"\\\]\x7f-\xff]+$")
+
+
 def parse_mailbox_name(line: str) -> str:
     """Last quoted name in an IMAP LIST line. Unquoted names use the last token."""
     quoted = re.findall(r'"((?:\\"|[^"])*)"', line or "")
@@ -37,6 +40,18 @@ def parse_mailbox_name(line: str) -> str:
         return quoted[-1].replace('\\"', '"')
     parts = (line or "").split()
     return parts[-1] if parts else ""
+
+
+def quote_mailbox(name: str) -> str:
+    """Quote a mailbox imaplib would otherwise send raw.
+
+    imaplib does not quote SELECT arguments. A space makes
+    ``[Gmail]/All Mail`` two tokens, and Gmail answers NO.
+    """
+    if _ATOM.fullmatch(name or ""):
+        return name
+    escaped = (name or "").replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def choose_mailboxes(names: list[str]) -> list[str]:
