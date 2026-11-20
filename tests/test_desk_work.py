@@ -259,7 +259,7 @@ class MorningFocusTests(unittest.TestCase):
             queue_single_roles([EMPIRICAL], db_path)
             waiting = morning_focus(db_path, TODAY)
             self.assertTrue(waiting["pause_research"])
-            self.assertEqual(waiting["role_line"], "Keep or skip the role waiting in To review.")
+            self.assertEqual(waiting["role_line"], "Keep or skip the role waiting.")
 
     def test_the_brief_and_telegram_lead_with_today_and_hide_new_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:

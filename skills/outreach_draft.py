@@ -16,9 +16,12 @@ class OutreachDraftSkill(Skill):
 
     def run(self, task: dict[str, Any]) -> dict[str, Any]:
         payload = task.get("payload") or {}
+        db_path = task.get("db_path") or "khursheed.db"
+        company_name = str(payload.get("company_name") or "").strip()
+        if company_name:
+            return _queue_company(db_path, company_name, payload)
         title = str(payload.get("title") or "").strip()
         url = str(payload.get("url") or "").strip()
-        db_path = task.get("db_path") or "khursheed.db"
         if not title:
             title, url = _latest_kept(db_path)
         if not title:
@@ -27,7 +30,7 @@ class OutreachDraftSkill(Skill):
         try:
             from priority_inbox import emit_priority_action
 
-            emit_priority_action(
+            action_id = emit_priority_action(
                 kind="outreach_draft",
                 title=f"Note for {title}",
                 description="Draft only. Keeping it does not send the note.",
@@ -39,7 +42,38 @@ class OutreachDraftSkill(Skill):
         except Exception as exc:
             logger.warning("Outreach draft could not be queued: %s", exc)
             return {"draft": body, "error": str(exc), "sent": False}
-        return {"draft": body, "title": title, "sent": False}
+        return {"draft": body, "title": title, "sent": False, "action_id": action_id}
+
+
+def _queue_company(db_path: str, company_name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Leave a company note in To review. The note is not sent."""
+    from icp_workflow import company_key
+    from priority_inbox import emit_priority_action
+
+    website = str(payload.get("website") or "").strip()
+    rationale = str(payload.get("rationale") or "").strip()
+    body = _body(company_name, website)
+    try:
+        action_id = emit_priority_action(
+            kind="outreach_draft",
+            title=f"Note for {company_name}",
+            description="Draft only. Approving it does not send the note.",
+            payload={
+                "title": company_name,
+                "url": website,
+                "body": body,
+                "send": False,
+                "company": True,
+                "rationale": rationale,
+            },
+            priority=1,
+            source_key=f"icp-outreach:{company_key(company_name)}",
+            db_path=str(db_path),
+        )
+    except Exception as exc:
+        logger.warning("Company note could not be queued: %s", exc)
+        return {"draft": body, "error": str(exc), "sent": False}
+    return {"draft": body, "title": company_name, "sent": False, "action_id": action_id}
 
 
 def _latest_kept(db_path: str) -> tuple[str, str]:

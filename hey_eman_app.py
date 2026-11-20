@@ -37,10 +37,12 @@ from desk_work import list_pursuits
 from desk_work import morning_focus
 from desk_work import set_pursuit_date
 from desk_work import submit_skill_request
-from skills.mail_scan import queue_mail_notice
 from chat_memory import load_turns
 from chat_memory import record_turn
-from executive_summary import _format_priority_alerts
+from icp_workflow import advance_icp
+from icp_workflow import decide_icp_draft
+from icp_workflow import describe_workflow
+from icp_workflow import get_workflow
 from executive_summary import generate_executive_summary
 from executive_summary import mail_origin
 from llm_agent import HeyEmanAgent
@@ -147,24 +149,48 @@ def _inject_base_css() -> None:
             height: 100% !important;
             overflow-y: auto !important;
         }
-        /* The Ask Enaam input is a globally pinned bar, so scope it to the chat
-           (first) tab only: hide it by default, show it when tab 1 is active. */
-        [data-testid="stBottom"] { display: none; }
-        [data-testid="stAppViewContainer"]:has(
-            [data-baseweb="tab-list"] > [data-baseweb="tab"]:first-child[aria-selected="true"]
-        ) [data-testid="stBottom"] {
-            display: block;
+        /* Wide screen: a row of page names. A phone uses the menu instead. */
+        .st-key-desk-tabs {
+            margin: 0.25rem 0 0.75rem;
+            border-bottom: 1px solid rgba(0,0,0,0.06);
         }
-        /* Status chips are buttons. They open the tab that holds the action. */
+        .st-key-desk-tabs [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap;
+            gap: 0;
+            overflow-x: auto;
+        }
+        .st-key-desk-tabs [data-testid="stColumn"],
+        .st-key-desk-tabs [data-testid="column"] {
+            width: auto !important;
+            flex: 0 0 auto !important;
+            min-width: 0 !important;
+        }
+        .st-key-desk-tabs button {
+            background: transparent !important;
+            border: none !important;
+            border-bottom: 2px solid transparent !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            color: #57534e !important;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+        .st-key-desk-tabs [class*="st-key-on-"] button {
+            border-bottom-color: #1f4b3a !important;
+            color: #1c1917 !important;
+        }
+        /* Status chips are buttons. They open the page that holds the action. */
         .st-key-enaam-chips { margin: 0.25rem 0 1rem; }
         .st-key-enaam-chips [data-testid="stHorizontalBlock"] {
             flex-wrap: wrap;
             gap: 0.4rem;
             align-items: center;
         }
-        .st-key-enaam-chips [data-testid="column"] {
+        .st-key-enaam-chips [data-testid="column"],
+        .st-key-enaam-chips [data-testid="stColumn"] {
             width: fit-content !important;
             flex: 0 0 auto !important;
+            min-width: 0 !important;
         }
         .st-key-enaam-chips button {
             width: auto !important;
@@ -196,7 +222,9 @@ def _inject_base_css() -> None:
             max-width: 26rem;
             margin: 8vh auto 0;
         }
-        /* Mobile: one column, full-width tap targets, tabs scroll sideways */
+        /* Phone pages live in a menu. The wide screen keeps the tab row. */
+        .st-key-desk-nav { display: none; }
+        /* Mobile: one column, full-width tap targets, pages in a menu */
         @media (max-width: 640px) {
             .block-container {
                 padding-left: 1rem;
@@ -218,13 +246,36 @@ def _inject_base_css() -> None:
             .stLinkButton > a {
                 min-height: 44px;
             }
-            .stTabs [data-baseweb="tab-list"] {
-                flex-wrap: nowrap;
-                overflow-x: auto;
-                -webkit-overflow-scrolling: touch;
+            .stTabs [data-baseweb="tab-list"] { display: none !important; }
+            .st-key-desk-nav { display: block; }
+            .st-key-desk-nav [data-testid="stHorizontalBlock"] {
+                flex-wrap: nowrap !important;
+                align-items: center;
             }
-            .stTabs [data-baseweb="tab"] {
-                flex: 0 0 auto;
+            .st-key-desk-nav [data-testid="stColumn"] {
+                width: auto !important;
+                flex: 0 0 auto !important;
+                min-width: 0 !important;
+            }
+            .st-key-desk-nav [data-testid="stColumn"]:last-child {
+                flex: 1 1 auto !important;
+            }
+            .st-key-desk-menu-toggle button {
+                width: 44px !important;
+                min-width: 44px;
+                padding: 0.35rem !important;
+                font-size: 1.25rem;
+                line-height: 1;
+            }
+            .st-key-desk-tabs { display: none !important; }
+            .st-key-enaam-chips [data-testid="stColumn"],
+            .st-key-enaam-chips [data-testid="column"] {
+                width: fit-content !important;
+                flex: 0 0 auto !important;
+                min-width: 0 !important;
+            }
+            .st-key-enaam-chips [data-testid="stHorizontalBlock"] {
+                flex-wrap: wrap !important;
             }
         }
         </style>
@@ -233,13 +284,25 @@ def _inject_base_css() -> None:
     )
 
 
-DESK_TABS = ("Ask Enaam", "Today", "To review", "Content", "Task log")
+DESK_TABS = ("Ask Enaam", "Now", "Companies", "Mail", "Content", "Task log")
 CHIP_TARGETS = {
-    "decisions": ("To review", "decisions"),
-    "review": ("To review", "review"),
-    "leads": ("Today", "leads"),
-    "brief": ("Today", "brief"),
+    "decisions": ("Now", "decisions"),
+    "companies": ("Companies", "companies"),
+    "mail": ("Mail", "mail"),
+    "leads": ("Now", "leads"),
+    "brief": ("Now", "brief"),
 }
+_LEGACY_TABS = {"Today": "Now", "To review": "Now"}
+
+REVIEW_SECTIONS = (
+    ("companies", "Companies", frozenset({"icp_candidate"})),
+    ("roles", "Roles", frozenset({"role_candidate"})),
+    ("bills", "Bills", frozenset(BILL_KINDS)),
+    ("mail", "Mail", frozenset({"mail_notice", "renewal_notice"})),
+    ("notes", "Notes", frozenset({"outreach_draft"})),
+    ("posts", "Posts", frozenset({"linkedin_post_draft"})),
+    ("other", "Other", frozenset()),
+)
 
 
 def _open_from_chip(target: str) -> None:
@@ -247,6 +310,7 @@ def _open_from_chip(target: str) -> None:
     tab, anchor = CHIP_TARGETS[target]
     st.session_state["desk_tab"] = tab
     st.session_state["desk_scroll"] = anchor
+    st.session_state["desk_menu_open"] = False
 
 
 def _arriving(anchor: str) -> bool:
@@ -308,16 +372,48 @@ def _scroll_to_chip() -> None:
     )
 
 
+def review_section(action_type: str) -> str:
+    """The plain group a waiting item belongs in."""
+    for key, _label, kinds in REVIEW_SECTIONS:
+        if action_type in kinds:
+            return key
+    return "other"
+
+
+def _page_of(action: dict) -> str:
+    """Which desk page holds this waiting item."""
+    kind = action.get("action_type") or ""
+    priority = int(action.get("priority") or 0)
+    if kind == "icp_candidate":
+        return "companies"
+    if kind == "outreach_draft":
+        payload = _parse_payload(action.get("payload_json"))
+        return "companies" if payload.get("company") else "now"
+    if kind == "linkedin_post_draft":
+        return "content"
+    if kind in {"mail_notice", "renewal_notice", *BILL_KINDS} and priority < 2:
+        return "mail"
+    return "now"
+
+
+def _open_pending(manager: Manager) -> list[dict]:
+    return list_open_priority_actions(min_priority=0, db_path=str(manager._db_path))
+
+
 def _render_chips(manager: Manager) -> None:
-    db_path = str(manager._db_path)
-    decisions = len(list_open_priority_actions(min_priority=2, db_path=db_path))
-    review = len(list_open_priority_actions(min_priority=0, db_path=db_path))
-    followups = len(list_open_loops(db_path=db_path, limit=50))
+    pending = _open_pending(manager)
+    decisions = sum(
+        1
+        for action in pending
+        if int(action.get("priority") or 0) >= 2 and _page_of(action) == "now"
+    )
+    companies = sum(1 for action in pending if action.get("action_type") == "icp_candidate")
+    mail = sum(1 for action in pending if _page_of(action) == "mail")
     brief_ready = bool(st.session_state.get("brief"))
     chips = [
         (f"{decisions} need you", "decisions", decisions > 0),
-        (f"{review} to review", "review", review > 0),
-        (f"{followups} saved leads", "leads", False),
+        (f"{companies} companies", "companies", companies > 0),
+        (f"{mail} mail", "mail", mail > 0),
         ("brief ready" if brief_ready else "no brief yet", "brief", brief_ready),
     ]
     with st.container(key="enaam-chips"):
@@ -430,10 +526,14 @@ def _parse_payload(raw) -> dict:
 def _render_mail_origin(action: dict) -> None:
     """Show which mailbox received the message, who sent it, and when."""
     origin = mail_origin(action)
+    title = str(action.get("title") or "").strip().lower()
+    subject = origin["subject"]
+    if subject and subject.strip().lower() == title:
+        subject = ""
     rows = [
         ("Inbox", origin["inbox"]),
         ("From", origin["sender"]),
-        ("Subject", origin["subject"]),
+        ("Subject", subject),
         ("Sent", origin["sent"]),
     ]
     visible = [(label, value) for label, value in rows if value]
@@ -468,38 +568,6 @@ def _render_bill_question(db_path: str, action: dict, key_prefix: str) -> None:
         st.rerun()
 
 
-def _latest_scan(manager: Manager) -> dict:
-    row = manager._connection.execute(
-        """
-        SELECT result_json
-        FROM skill_runs
-        WHERE skill_name = 'sifter'
-        ORDER BY executed_at DESC
-        LIMIT 1
-        """
-    ).fetchone()
-    if row is None or not row[0]:
-        return {}
-    try:
-        payload = json.loads(row[0])
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    scan = payload.get("scan") or {}
-    if not scan.get("report"):
-        scan["report"] = payload.get("scan_report") or ""
-    return scan
-
-
-def _notice_is_open(db_path: str, action_id: str) -> bool:
-    import sqlite3
-
-    row = sqlite3.connect(db_path, timeout=30.0).execute(
-        "SELECT status FROM pending_actions WHERE action_id = ?",
-        (action_id,),
-    ).fetchone()
-    return bool(row and row[0] == "pending")
-
-
 def _render_notice_buttons(db_path: str, action_id: str, key_prefix: str) -> None:
     """Close a statement, subscription, or renewal. Nothing here sends mail."""
     done, later, dismiss = st.columns(3)
@@ -513,11 +581,6 @@ def _render_notice_buttons(db_path: str, action_id: str, key_prefix: str) -> Non
         result = reject_not_a_bill(db_path, action_id, reviewed_by="desk")
         st.session_state.last_ack = result.get("message") or "Dismissed."
         st.rerun()
-
-
-def _open_bills(db_path: str) -> list[dict]:
-    pending = list_open_priority_actions(min_priority=0, db_path=db_path)
-    return [action for action in pending if action.get("action_type") in BILL_KINDS]
 
 
 def _render_commitments(db_path: str, commitments: list[dict]) -> None:
@@ -555,7 +618,7 @@ def _render_pursuits(manager: Manager, pursuits: list[dict]) -> None:
                 "outreach_draft",
                 {"title": title, "url": url},
             )
-            st.session_state.last_ack = "Draft is in To review. It has not been sent."
+            st.session_state.last_ack = "The note is on Now. It has not been sent."
             st.rerun()
         with st.form(f"pursuit-date-{pursuit_id}"):
             next_on = st.text_input("Next step", value=when, placeholder="2026-11-20")
@@ -584,114 +647,57 @@ def _render_saved_leads(db_path: str, loops: list[dict]) -> None:
             st.rerun()
 
 
-def _bill_for_finding(bills: list[dict], finding: dict) -> dict | None:
-    subject = str(finding.get("subject") or "").strip().lower()
-    if not subject:
-        return None
-    for bill in bills:
-        payload = _parse_payload(bill.get("payload_json"))
-        stored = str(payload.get("subject") or bill.get("description") or "").strip().lower()
-        if stored and (stored == subject or subject in stored or stored in subject):
-            return bill
-    return None
-
-
-def _render_mail_scan(manager: Manager, db_path: str) -> None:
-    """The scan list itself is what you address. The prose report stays folded away."""
-    from skills.mail_scan import BUCKET_LABELS
-    from skills.mail_scan import BUCKET_ORDER
-
-    scan = _latest_scan(manager)
-    findings = scan.get("findings") or []
-    report = str(scan.get("report") or "")
-    coverage = report.split("\n", 1)[0] if report else ""
-    bills = _open_bills(db_path)
-    with st.expander("Mail scan", expanded=bool(findings or report)):
-        if coverage:
-            st.caption(coverage)
-        if not findings:
-            st.caption("Check mail to review the bill folders. The morning brief keeps only the short list.")
-            return
-        grouped: dict[str, list[dict]] = {bucket: [] for bucket in BUCKET_ORDER}
-        for finding in findings:
-            grouped.setdefault(finding.get("bucket") or "", []).append(finding)
-        index = 0
-        for bucket in BUCKET_ORDER:
-            rows = grouped.get(bucket) or []
-            if not rows:
-                continue
-            st.markdown(f"**{BUCKET_LABELS.get(bucket, bucket)}**")
-            for finding in rows:
-                index += 1
-                st.markdown(finding.get("line") or finding.get("subject") or "Message")
-                if bucket == "upcoming_bill":
-                    bill = _bill_for_finding(bills, finding)
-                    if bill:
-                        _render_bill_question(db_path, bill, f"scan-{index}")
-                    else:
-                        st.caption("No open bill was saved for this message.")
-                    continue
-                action_id = queue_mail_notice(
-                    db_path,
-                    bucket=bucket,
-                    account=str(finding.get("account") or ""),
-                    subject=str(finding.get("subject") or ""),
-                    line=str(finding.get("line") or ""),
-                )
-                if not action_id or not _notice_is_open(db_path, action_id):
-                    st.caption("Already addressed.")
-                    continue
-                _render_notice_buttons(db_path, action_id, f"scan-{index}-{action_id}")
-        if report:
-            with st.expander("Scan notes", expanded=False):
-                st.markdown(report)
-
-
-def _render_today(manager: Manager) -> None:
-    """Each section is a collapsible card; urgent decisions open by default."""
+def _render_now(manager: Manager) -> None:
+    """The morning line, the roles it is about, and anything that needs a decision."""
     db_path = str(manager._db_path)
     refresh_open_bill_priorities(db_path)
-    alerts = list_open_priority_actions(min_priority=2, db_path=db_path)
-    bills = _open_bills(db_path)
     loops = list_open_loops(db_path=db_path, limit=50)
     brief = st.session_state.get("brief")
+    actions = [action for action in _open_pending(manager) if _page_of(action) == "now"]
+    roles = [action for action in actions if action.get("action_type") == "role_candidate"]
+    notes = [action for action in actions if action.get("action_type") == "outreach_draft"]
+    workflows = [action for action in actions if action.get("action_type") == "skill_request"]
+    held = {action.get("action_id") for action in roles + notes + workflows}
+    needs = [
+        action
+        for action in actions
+        if int(action.get("priority") or 0) >= 2 and action.get("action_id") not in held
+    ]
+    other = [
+        action
+        for action in actions
+        if action.get("action_id") not in held and action not in needs
+    ]
 
-    focus = morning_focus(db_path)
-    st.markdown("**Today**")
-    for line in focus["lines"]:
+    for line in morning_focus(db_path)["lines"]:
         st.markdown(line)
-    if focus["pause_research"]:
-        st.caption("Research is waiting until the open role has a date.")
 
-    _render_mail_scan(manager, db_path)
-
-    with st.expander(f"Bills ({len(bills)})", expanded=bool(bills)):
-        if not bills:
-            st.caption("No open bills.")
-        for bill in bills:
-            st.markdown(f"**{bill.get('title') or 'Bill'}**")
-            _render_mail_origin(bill)
-            _render_bill_question(db_path, bill, "today")
-
-    with st.expander(f"Needs a decision ({len(alerts)})", expanded=bool(alerts)):
-        if not alerts:
-            st.caption("Inbox is clear — nothing needs a decision right now.")
-        for alert in alerts:
-            st.markdown(f"**{alert.get('title') or 'Item'}**")
-            if alert.get("action_type") in {"renewal_notice", "mail_notice"}:
-                _render_notice_buttons(db_path, alert["action_id"], f"decision-{alert.get('action_id')}")
-            else:
-                st.markdown(_format_priority_alerts([alert]))
+    marked = {"done": False}
+    if roles:
+        st.markdown(f"**Roles** · {len(roles)}")
+        _render_actions(manager, roles, open_all=len(roles) <= 3, marked=marked)
+    if needs:
+        st.markdown(f"**Needs you** · {len(needs)}")
+        _render_actions(manager, needs, marked=marked)
+    if notes:
+        st.markdown(f"**Notes** · {len(notes)}")
+        _render_actions(manager, notes, marked=marked)
+    if workflows:
+        st.markdown(f"**Workflows** · {len(workflows)}")
+        _render_actions(manager, workflows, marked=marked)
+    if other:
+        st.markdown(f"**Other** · {len(other)}")
+        _render_actions(manager, other, marked=marked)
 
     commitments = list_commitments(db_path)
-    with st.expander(f"Commitments ({len(commitments)})", expanded=bool(commitments)):
+    with st.expander(f"Commitments ({len(commitments)})", expanded=False):
         st.caption("Promises you made. These are separate from saved search pages.")
         _render_commitments(db_path, commitments)
 
     pursuits = list_pursuits(db_path)
-    with st.expander(f"Kept roles ({len(pursuits)})", expanded=bool(pursuits)):
+    with st.expander(f"Kept roles ({len(pursuits)})", expanded=False):
         if not pursuits:
-            st.caption("Keep a single-employer role from To review and it will show here.")
+            st.caption("Keep a role on Now and it will show here.")
         _render_pursuits(manager, pursuits)
 
     _mark("leads")
@@ -704,16 +710,13 @@ def _render_today(manager: Manager) -> None:
 
     _mark("brief")
     with st.expander("Daily brief", expanded=_arriving("brief")):
+        if st.button("Refresh brief", key="refresh-brief"):
+            st.session_state.brief = generate_executive_summary(manager, _brief_notifier())
+            st.rerun()
         if brief:
             st.markdown(brief)
         else:
-            st.caption("No brief yet. Use Run morning brief above.")
-
-    _render_billers(db_path)
-
-    if st.session_state.get("last_ack"):
-        st.toast(st.session_state.last_ack)
-        del st.session_state["last_ack"]
+            st.caption("No brief yet. Run the morning brief above.")
 
 
 def _ensure_research_state(db_path: str) -> None:
@@ -777,12 +780,9 @@ def _render_research(db_path: str) -> None:
     if st.button("Save", type="primary", key="save-research", use_container_width=True):
         _persist_research(db_path)
     with st.container(key="config-scroll", border=True):
-        st.caption(
-            "The next morning run uses these. "
-            "The automatic run uses this Mac's clock and needs the Mac awake within 30 minutes of that time."
-        )
+        st.caption("The next morning run uses these.")
         st.checkbox("Include ICP companies in the morning run", key="desk_icp_enabled")
-        st.caption("Matching companies are offered in To review. Add keeps one. Skip leaves it off the list.")
+        st.caption("Matching companies are offered on Companies. Add keeps one. Skip leaves it off the list.")
         st.number_input("Days of mail to scan", min_value=1, max_value=30, step=1, key="desk_mail_days")
         st.number_input(
             "Days of research to include in the brief",
@@ -818,7 +818,7 @@ def _render_research(db_path: str) -> None:
             skill_ask = st.text_area("What should the skill do?", height=80)
             if st.form_submit_button("Show workflow") and skill_ask.strip():
                 result = submit_skill_request(db_path, skill_ask)
-                st.session_state.last_ack = "Workflow is in To review."
+                st.session_state.last_ack = "Workflow is on Now."
                 st.session_state.skill_preview = result.get("message") or ""
                 st.rerun()
         preview = st.session_state.get("skill_preview")
@@ -855,6 +855,7 @@ def _render_research(db_path: str) -> None:
                 result = remove_icp_company(db_path, row["company_name"])
                 st.session_state.last_ack = result.get("message") or "Removed."
                 st.rerun()
+    _render_billers(db_path)
 
 
 def _render_billers(db_path: str) -> None:
@@ -922,11 +923,32 @@ def _render_role_candidate(db_path: str, action: dict) -> None:
 
 def _render_outreach_draft(action: dict, db_path: str) -> None:
     payload = _parse_payload(action.get("payload_json"))
+    if payload.get("company"):
+        _render_company_draft(db_path, action, payload)
+        return
     st.caption("Keeping this draft does not send it.")
     st.markdown(payload.get("body") or action.get("description") or "")
     if st.button("Keep draft", key=f"draft-keep-{action.get('action_id')}"):
         result = approve_and_execute(db_path, action["action_id"], reviewed_by="desk")
         st.session_state.last_ack = result.get("message") or "Draft kept."
+        st.rerun()
+
+
+def _render_company_draft(db_path: str, action: dict, payload: dict) -> None:
+    rationale = str(payload.get("rationale") or "").strip()
+    if rationale:
+        st.caption(rationale)
+    st.caption("Approving this note does not send it.")
+    st.markdown(payload.get("body") or action.get("description") or "")
+    approve, later = st.columns(2)
+    action_id = action.get("action_id")
+    if approve.button("Approve", key=f"company-yes-{action_id}", use_container_width=True):
+        result = decide_icp_draft(db_path, action_id, approve=True)
+        st.session_state.last_ack = result.get("message") or "Approved."
+        st.rerun()
+    if later.button("Not now", key=f"company-no-{action_id}", use_container_width=True):
+        result = decide_icp_draft(db_path, action_id, approve=False)
+        st.session_state.last_ack = result.get("message") or "Left for later."
         st.rerun()
 
 
@@ -949,8 +971,9 @@ def _render_skill_request(db_path: str, action: dict) -> None:
         st.rerun()
 
 
-def _render_icp_candidate(db_path: str, action: dict) -> None:
-    """Let a suggested company be added to the ICP list or skipped."""
+def _render_icp_candidate(manager: Manager, action: dict) -> None:
+    """Let a suggested company be added, qualified, or skipped."""
+    db_path = str(manager._db_path)
     payload = _parse_payload(action.get("payload_json"))
     why = action.get("description") or payload.get("why") or ""
     if why:
@@ -969,11 +992,29 @@ def _render_icp_candidate(db_path: str, action: dict) -> None:
     website = str(payload.get("website") or "").strip()
     if website:
         st.markdown(website)
-    add, skip = st.columns(2)
+    company_name = str(payload.get("company_name") or action.get("title") or "").strip()
+    existing = get_workflow(db_path, company_name)
+    if existing and existing.get("step") not in {"qualify"}:
+        st.caption(describe_workflow(existing))
+    add, qualify, skip = st.columns(3)
     action_id = action.get("action_id")
     if add.button("Add", key=f"icp-add-{action_id}", use_container_width=True):
         result = choose_icp_candidate(db_path, action_id, accept=True)
         st.session_state.last_ack = result.get("message") or "Added."
+        st.rerun()
+    if qualify.button("Qualify", key=f"icp-qualify-{action_id}", use_container_width=True):
+        company = {
+            "company_name": company_name,
+            "website": website,
+            "industry": str(payload.get("industry") or ""),
+            "employee_count": payload.get("employee_count") or 0,
+            "funding_stage": str(payload.get("funding_stage") or ""),
+            "has_cto": str(payload.get("has_cto") or "unknown"),
+            "acquired": str(payload.get("acquired") or "unknown"),
+        }
+        with st.spinner(f"Qualifying {company_name}"):
+            result = advance_icp(db_path, company, manager)
+        st.session_state.last_ack = result.get("message") or "Qualified."
         st.rerun()
     if skip.button("Skip", key=f"icp-skip-{action_id}", use_container_width=True):
         result = choose_icp_candidate(db_path, action_id, accept=False)
@@ -981,63 +1022,102 @@ def _render_icp_candidate(db_path: str, action: dict) -> None:
         st.rerun()
 
 
-def _render_review_queue(manager: Manager) -> None:
+def _review_label(action: dict) -> str:
+    title = action.get("title") or "(untitled)"
+    inbox = mail_origin(action)["inbox"]
+    if inbox and review_section(action.get("action_type") or "") == "mail":
+        return f"{title} · {inbox}"
+    return title
+
+
+def _render_review_item(manager: Manager, action: dict, opened: bool) -> None:
     db_path = str(manager._db_path)
-    pending = list_open_priority_actions(min_priority=0, db_path=db_path)
-    if not pending:
-        st.caption("Nothing is waiting. You're all caught up.")
-        return
-    st.caption(f"{len(pending)} waiting — expand an item to review it.")
-    _mark("review")
-    marked_decision = False
-    for index, action in enumerate(pending):
-        priority = int(action.get("priority") or 0)
-        if _arriving("decisions") and priority >= 2 and not marked_decision:
-            _mark("decisions")
-            marked_decision = True
-        action_type = action.get("action_type") or ""
-        opened = action_type == "linkedin_post_draft"
-        if _arriving("review") and index == 0:
-            opened = True
-        if _arriving("decisions") and priority >= 2:
-            opened = True
-        origin = mail_origin(action)
-        label = action.get("title") or "(untitled)"
-        if origin["inbox"]:
-            label = f"{label} · {origin['inbox']}"
-        with st.expander(label, expanded=opened):
-            st.caption(action_type)
+    action_type = action.get("action_type") or ""
+    with st.expander(_review_label(action), expanded=opened):
+        if action_type in {"mail_notice", "renewal_notice", *BILL_KINDS}:
             _render_mail_origin(action)
-            if action_type == "linkedin_post_draft":
-                _render_blog_draft(action)
-            elif action_type == "icp_candidate":
-                _render_icp_candidate(db_path, action)
-                continue
-            elif action_type == "role_candidate":
-                _render_role_candidate(db_path, action)
-                continue
-            elif action_type == "outreach_draft":
-                _render_outreach_draft(action, db_path)
-                continue
-            elif action_type == "skill_request":
-                _render_skill_request(db_path, action)
-                continue
-            elif action_type in {"renewal_notice", "mail_notice"}:
-                st.markdown(action.get("description") or "")
-                _render_notice_buttons(db_path, action["action_id"], f"review-{action.get('action_id')}")
-                continue
-            elif action_type in BILL_KINDS:
-                _render_bill_question(db_path, action, "review")
-                continue
-            elif action.get("description") and action.get("description") != origin["subject"]:
-                st.markdown(action["description"])
+        if action_type == "linkedin_post_draft":
+            _render_blog_draft(action)
             if st.button("Acknowledge", key=f"ack-{action.get('action_id')}"):
                 result = approve_and_execute(db_path, action["action_id"], reviewed_by="desk")
                 st.session_state.last_ack = result.get("message") or "Updated."
                 st.rerun()
-    if st.session_state.get("last_ack"):
-        st.toast(st.session_state.last_ack)
-        del st.session_state["last_ack"]
+        elif action_type == "icp_candidate":
+            _render_icp_candidate(manager, action)
+        elif action_type == "role_candidate":
+            _render_role_candidate(db_path, action)
+        elif action_type == "outreach_draft":
+            _render_outreach_draft(action, db_path)
+        elif action_type == "skill_request":
+            _render_skill_request(db_path, action)
+        elif action_type in {"renewal_notice", "mail_notice"}:
+            _render_notice_buttons(db_path, action["action_id"], f"review-{action.get('action_id')}")
+        elif action_type in BILL_KINDS:
+            _render_bill_question(db_path, action, "review")
+        else:
+            description = str(action.get("description") or "")
+            title = str(action.get("title") or "")
+            if description and description != title:
+                st.markdown(description)
+            if st.button("Acknowledge", key=f"ack-{action.get('action_id')}"):
+                result = approve_and_execute(db_path, action["action_id"], reviewed_by="desk")
+                st.session_state.last_ack = result.get("message") or "Updated."
+                st.rerun()
+
+
+def _render_actions(
+    manager: Manager,
+    actions: list[dict],
+    *,
+    open_all: bool = False,
+    open_first: bool = False,
+    marked: dict | None = None,
+) -> None:
+    for index, action in enumerate(actions):
+        priority = int(action.get("priority") or 0)
+        if marked is not None and priority >= 2 and not marked["done"]:
+            _mark("decisions")
+            marked["done"] = True
+        opened = open_all or (open_first and index == 0)
+        if _arriving("decisions") and priority >= 2:
+            opened = True
+        _render_review_item(manager, action, opened)
+
+
+def _render_companies(manager: Manager) -> None:
+    actions = [action for action in _open_pending(manager) if _page_of(action) == "companies"]
+    candidates = [action for action in actions if action.get("action_type") == "icp_candidate"]
+    notes = [action for action in actions if action.get("action_type") != "icp_candidate"]
+    if not actions:
+        st.caption("No companies waiting.")
+        return
+    _mark("companies")
+    if candidates:
+        noun = "company" if len(candidates) == 1 else "companies"
+        st.caption(f"{len(candidates)} {noun}. Add one to the list, qualify it, or skip it.")
+        _render_actions(manager, candidates, open_first=_arriving("companies"))
+    if notes:
+        st.markdown(f"**Notes** · {len(notes)}")
+        _render_actions(manager, notes, open_first=_arriving("companies") and not candidates)
+
+
+def _render_mail_page(manager: Manager) -> None:
+    actions = [action for action in _open_pending(manager) if _page_of(action) == "mail"]
+    _mark("mail")
+    if not actions:
+        st.caption("No mail waiting.")
+        return
+    noun = "message" if len(actions) == 1 else "messages"
+    st.caption(f"{len(actions)} {noun}.")
+    _render_actions(manager, actions, open_first=_arriving("mail"))
+
+
+def _render_content(manager: Manager) -> None:
+    drafts = [action for action in _open_pending(manager) if _page_of(action) == "content"]
+    if drafts:
+        st.markdown(f"**Drafts** · {len(drafts)}")
+        _render_actions(manager, drafts)
+    _render_theme_queue(manager)
 
 
 def _render_blog_draft(action: dict) -> None:
@@ -1145,7 +1225,7 @@ def _render_theme_queue(manager: Manager) -> None:
                     payload["mode"] = "draft"  # manual button never publishes
                     _run_skill_now(manager, "blogger", payload)
                     blog_themes.mark_used(item["theme_id"], db_path=db_path)
-                st.toast("Draft created — see To review")
+                st.toast("Draft created. It is in Content.")
                 st.rerun()
             if cols[1].button("Remove", key=f"del-{item['theme_id']}"):
                 blog_themes.delete_theme(item["theme_id"], db_path=db_path)
@@ -1313,14 +1393,10 @@ def _render_header(manager: Manager) -> None:
     st.caption(today)
     _render_chips(manager)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     if c1.button("Run morning brief", use_container_width=True, type="primary", icon=":material/bolt:"):
         _run_morning(manager)
-    if c2.button("Refresh brief", use_container_width=True, icon=":material/refresh:"):
-        notifier = _brief_notifier()
-        st.session_state.brief = generate_executive_summary(manager, notifier)
-        st.toast("Brief refreshed")
-    if c3.button("Check mail now", use_container_width=True, icon=":material/mail:"):
+    if c2.button("Check mail now", use_container_width=True, icon=":material/mail:"):
         with st.spinner("Checking mail. Headers first, then the bills and renewals."):
             _run_skill_now(
                 manager,
@@ -1331,6 +1407,73 @@ def _render_header(manager: Manager) -> None:
                 },
             )
         st.toast("Mail check finished")
+
+
+def _coerce_desk_tab() -> None:
+    """Map a saved tab name from the old desk onto a page that still exists."""
+    current = st.session_state.get("desk_tab")
+    if current in _LEGACY_TABS:
+        st.session_state["desk_tab"] = _LEGACY_TABS[current]
+    elif current is not None and current not in DESK_TABS:
+        st.session_state["desk_tab"] = "Ask Enaam"
+
+
+def _current_page() -> str:
+    _coerce_desk_tab()
+    page = st.session_state.get("desk_tab") or "Ask Enaam"
+    return page if page in DESK_TABS else "Ask Enaam"
+
+
+def _select_page(name: str) -> None:
+    st.session_state["desk_tab"] = name
+    st.session_state["desk_menu_open"] = False
+    st.rerun()
+
+
+_PAGE_KEY = {
+    "Ask Enaam": "ask",
+    "Now": "now",
+    "Companies": "companies",
+    "Mail": "mail",
+    "Content": "content",
+    "Task log": "log",
+}
+
+
+def _render_desktop_nav(page: str) -> None:
+    """A row of page names. Hidden on a phone, where the menu is used."""
+    with st.container(key="desk-tabs"):
+        columns = st.columns(len(DESK_TABS))
+        for column, name in zip(columns, DESK_TABS):
+            tone = "on" if name == page else "off"
+            with column.container(key=f"{tone}-{_PAGE_KEY[name]}"):
+                if st.button(name, key=f"desk-tab-{_PAGE_KEY[name]}"):
+                    _select_page(name)
+
+
+def _render_mobile_nav(page: str) -> None:
+    """On a phone, the page name sits beside the menu that chooses a page."""
+    with st.container(key="desk-nav"):
+        toggle, title = st.columns([1, 5])
+        if toggle.button("☰", key="desk-menu-toggle", help="Pages"):
+            st.session_state["desk_menu_open"] = not st.session_state.get("desk_menu_open", False)
+            st.rerun()
+        title.markdown(f"**{page}**")
+        if st.session_state.get("desk_menu_open"):
+            for name in DESK_TABS:
+                if st.button(
+                    name,
+                    key=f"desk-go-{_PAGE_KEY[name]}",
+                    use_container_width=True,
+                    type="primary" if name == page else "secondary",
+                ):
+                    _select_page(name)
+
+
+def _toast_ack() -> None:
+    if st.session_state.get("last_ack"):
+        st.toast(st.session_state.last_ack)
+        del st.session_state["last_ack"]
 
 
 # ---------------------------------------------------------------------------
@@ -1372,22 +1515,26 @@ def main() -> None:
         st.session_state.brief = saved_brief.read_text(encoding="utf-8")
 
     _render_header(manager)
-
-    tabs = st.tabs(DESK_TABS, key="desk_tab", default="Ask Enaam", on_change="rerun")
-    with tabs[0]:
+    page = _current_page()
+    _render_mobile_nav(page)
+    _render_desktop_nav(page)
+    if page == "Ask Enaam":
         _render_conversation(manager, agent)
-    with tabs[1]:
-        _render_today(manager)
-    with tabs[2]:
-        _render_review_queue(manager)
-    with tabs[3]:
-        _render_theme_queue(manager)
-    with tabs[4]:
+    elif page == "Now":
+        _render_now(manager)
+    elif page == "Companies":
+        _render_companies(manager)
+    elif page == "Mail":
+        _render_mail_page(manager)
+    elif page == "Content":
+        _render_content(manager)
+    else:
         _render_runs(manager)
 
     _scroll_to_chip()
+    _toast_ack()
 
-    prompt = st.chat_input("Ask Enaam")
+    prompt = st.chat_input("Ask Enaam") if page == "Ask Enaam" else None
     if prompt:
         with st.spinner("Working"):
             _answer(prompt, manager, agent)

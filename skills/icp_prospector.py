@@ -24,7 +24,11 @@ class IcpProspectorSkill(Skill):
     def run(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Process seed companies and return ranked prospects"""
         payload = task.get("payload", {})
-        
+        one = self._one_company(payload.get("company"))
+        if one is not None:
+            enriched = self._enrich_companies([one])
+            return self._rank_companies(enriched, 1)
+
         # Extract configuration with defaults
         seed_path = payload.get("seed_path", "data/icp_seed.csv")
         industries = set(payload.get("industries", ["saas", "fintech", "edtech", "commerce"]))
@@ -132,6 +136,25 @@ class IcpProspectorSkill(Skill):
             logger.error(f"Error loading CSV {seed_path}: {e}")
             
         return companies
+
+    def _one_company(self, raw: Any) -> Dict[str, Any] | None:
+        """Shape one company for qualification. The batch seed scan stays separate."""
+        if not isinstance(raw, dict):
+            return None
+        name = str(raw.get("company_name") or raw.get("name") or "").strip()
+        if not name:
+            return None
+        return {
+            "company_name": name,
+            "website": str(raw.get("website") or "").strip(),
+            "industry": str(raw.get("industry") or "").strip().lower(),
+            "employee_count": self._safe_int(raw.get("employee_count")) or 0,
+            "funding_stage": str(raw.get("funding_stage") or "").strip().lower(),
+            "has_cto": str(raw.get("has_cto") or "unknown").strip().lower() or "unknown",
+            "acquired": str(raw.get("acquired") or "unknown").strip().lower() or "unknown",
+            "hiring_signals_url": str(raw.get("hiring_signals_url") or "").strip(),
+            "is_hiring_ai": "unknown",
+        }
 
     def _seed_rows(self, db_path: str | None) -> List[Dict[str, Any]]:
         if not db_path:

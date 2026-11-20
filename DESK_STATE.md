@@ -1,4 +1,4 @@
-# Desk state — 19 Nov 2026
+# Desk state — 20 Nov 2026
 
 Live desk is `hey_eman_app.py` on port 8510, branch `cleanup/codebase-fixes`.
 The quarter's goal is one fractional CTO retainer. Bills already surface.
@@ -8,12 +8,13 @@ The weekly post already waits for a yes.
 
 - Gmail `[Gmail]/All Mail` is quoted on select, so a space in the mailbox name no longer fails the scan.
 - The morning leads with one dated next step on a kept role. A bill that is overdue, due today, or due within 2 days outranks that role. While any kept role has no date, or a role is waiting and nothing is kept, lead scout, CTO radar, ICP finder, and ICP prospector stay quiet. An empty desk still searches.
-- The same rule is what the brief, the Telegram text, the Today tab, and the morning run use. A kept role can store a next-step date.
-- The four header chips open the block they name: need-you opens the urgent item in To review, to-review opens the top of that list, saved leads opens Saved leads, and the brief chip opens the Daily brief.
+- The same rule is what the brief, the Telegram text, Now, and the morning run use. A kept role can store a next-step date.
+- One company can be qualified from Companies. Qualify writes the findings, and a note waits there until Approve or Not now. Approving records consent and does not send the note. The morning run only finishes a company already past qualify.
+- The desk pages are Ask Enaam, Now, Companies, Mail, Content, and Task log. Now holds the morning line, waiting roles, and anything that needs a decision. Companies holds the ICP names. Mail holds ordinary notices and bills. On a phone the page names sit in a menu. The chips are need-you, companies, mail, and the brief.
 
 ## Left, in order
 
-Pick these up only after the dated follow-up has been the morning habit. Do the first one that becomes true.
+Qualify one live company from Companies before trusting that path. Then pick these up only after the dated follow-up has been the morning habit. Do the first one that becomes true.
 
 1. Who is waiting in non-bill mail, once a client or a prospect writes often enough that a bills-only inbox misses them.
 2. Meeting prep past the calendar titles, once the calendar feed is on and a meeting needs more than a time.

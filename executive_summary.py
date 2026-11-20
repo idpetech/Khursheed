@@ -55,7 +55,7 @@ def generate_executive_summary(
             waiting = _waiting_icp_choices(db_path)
             if waiting:
                 noun = "company is" if waiting == 1 else "companies are"
-                icp_text = f"_{waiting} {noun} waiting in To review._"
+                icp_text = f"_{waiting} {noun} waiting in Companies._"
     except Exception:
         pass
 

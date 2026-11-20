@@ -207,6 +207,26 @@ with st.container(key="config-scroll"):
         self.assertGreater(len(sent), 1)
         self.assertNotIn("token", "".join(sent))
 
+    def test_waiting_items_land_on_the_page_that_owns_them(self):
+        from hey_eman_app import _page_of
+
+        self.assertEqual(_page_of({"action_type": "icp_candidate", "priority": 1}), "companies")
+        self.assertEqual(_page_of({"action_type": "mail_notice", "priority": 1}), "mail")
+        self.assertEqual(_page_of({"action_type": "new_bill", "priority": 1}), "mail")
+        self.assertEqual(_page_of({"action_type": "renewal_notice", "priority": 2}), "now")
+        self.assertEqual(_page_of({"action_type": "role_candidate", "priority": 1}), "now")
+        self.assertEqual(_page_of({"action_type": "linkedin_post_draft", "priority": 1}), "content")
+        self.assertEqual(
+            _page_of(
+                {
+                    "action_type": "outreach_draft",
+                    "priority": 1,
+                    "payload_json": '{"company": true}',
+                }
+            ),
+            "companies",
+        )
+
     def test_a_status_chip_opens_the_tab_that_holds_the_action(self):
         from streamlit.testing.v1 import AppTest
 
@@ -220,34 +240,34 @@ from hey_eman_app import _open_from_chip
 if st.button("1 need you", key="chip-decisions"):
     _open_from_chip("decisions")
     st.rerun()
-if st.button("13 saved leads", key="chip-leads"):
-    _open_from_chip("leads")
+if st.button("9 companies", key="chip-companies"):
+    _open_from_chip("companies")
     st.rerun()
 tabs = st.tabs(
-    ["Ask Enaam", "Today", "To review", "Content", "Task log"],
+    ["Ask Enaam", "Now", "Companies", "Mail", "Content", "Task log"],
     key="desk_tab",
     default="Ask Enaam",
     on_change="rerun",
 )
 st.write("tab:" + str(st.session_state.get("desk_tab")))
 st.write("scroll:" + str(st.session_state.get("desk_scroll")))
-st.write("review-open:" + str(bool(tabs[2].open)))
-st.write("today-open:" + str(bool(tabs[1].open)))
+st.write("now-open:" + str(bool(tabs[1].open)))
+st.write("companies-open:" + str(bool(tabs[2].open)))
 """
         app = AppTest.from_string(script, default_timeout=20)
         app.run()
         need = next(button for button in app.button if button.label == "1 need you")
         need.click().run()
         text = "\n".join(item.value for item in app.markdown)
-        self.assertIn("tab:To review", text)
+        self.assertIn("tab:Now", text)
         self.assertIn("scroll:decisions", text)
-        self.assertIn("review-open:True", text)
-        leads = next(button for button in app.button if button.label == "13 saved leads")
-        leads.click().run()
+        self.assertIn("now-open:True", text)
+        companies = next(button for button in app.button if button.label == "9 companies")
+        companies.click().run()
         text = "\n".join(item.value for item in app.markdown)
-        self.assertIn("tab:Today", text)
-        self.assertIn("scroll:leads", text)
-        self.assertIn("today-open:True", text)
+        self.assertIn("tab:Companies", text)
+        self.assertIn("scroll:companies", text)
+        self.assertIn("companies-open:True", text)
 
 
 if __name__ == "__main__":

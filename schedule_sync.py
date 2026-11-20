@@ -140,7 +140,18 @@ def run_morning_skills(
             except Exception:
                 logger.exception("Morning skill %s failed for %s", skill, task_id)
             ran.append(f"{task_id}:{skill}")
+    _resume_company_workflows(manager)
     return ran
+
+
+def _resume_company_workflows(manager: Manager) -> None:
+    """Finish notes for companies already qualified. Do not start a search."""
+    try:
+        from icp_workflow import resume_open_workflows
+
+        resume_open_workflows(manager)
+    except Exception:
+        logger.exception("Company workflows could not resume")
 
 
 def _research_paused(manager: Manager, moment: datetime) -> bool:

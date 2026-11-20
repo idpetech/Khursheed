@@ -280,7 +280,7 @@ def morning_focus(db_path: str | Path, today: date | None = None) -> dict[str, A
             role_line = f"Next follow-up: {title} on {stamp}."
         pause = False
     elif any(action.get("action_type") == "role_candidate" for action in actions):
-        role_line = "Keep or skip the role waiting in To review."
+        role_line = "Keep or skip the role waiting."
         pause = True
     else:
         role_line = "No kept role yet."
@@ -375,7 +375,7 @@ def propose_skill(ask: str) -> dict[str, Any]:
     workflow = [
         "Read this request and the principal profile.",
         "Do only the work described below, and stop before sending anything.",
-        "Put the result in To review.",
+        "Put the result on Now.",
         "After approval, add the briefing line to the morning note.",
         text,
     ]
@@ -383,7 +383,7 @@ def propose_skill(ask: str) -> dict[str, Any]:
     if "calendar" in lowered or "meeting" in lowered:
         workflow.insert(1, "Read the calendar only when Calendar prep is on in Config.")
     if "email" in lowered or "outreach" in lowered or "note" in lowered:
-        workflow.insert(1, "Write the note. Leave it in To review. Do not send it.")
+        workflow.insert(1, "Write the note. Leave it on Now. Do not send it.")
     briefing = f"You asked for a skill to {text[:180].rstrip('.')}."
     return {
         "status": "ok",
@@ -438,7 +438,7 @@ def submit_skill_request(db_path: str | Path, ask: str) -> dict[str, Any]:
     message = (
         f"### Workflow\n{workflow}\n\n"
         f"### Briefing\n{proposal['briefing']}\n\n"
-        "It is waiting in To review. Approve it there to add the briefing to the morning note. "
+        "It is waiting on Now. Approve it there to add the briefing to the morning note. "
         "Approving does not install code and does not send anything."
     )
     return {"status": "ok", "message": message, "request_id": request_id, **proposal}
