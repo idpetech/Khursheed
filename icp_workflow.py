@@ -35,6 +35,7 @@ WAITING = frozenset({"awaiting_approval", "approved", "declined", "not_a_fit"})
 RESUME_STEPS = frozenset({"decide", "draft"})
 QUALIFY = "icp_prospector"
 DRAFT = "outreach_draft"
+DEFAULT_PURPOSE = "CTO opportunity"
 
 
 def company_key(name: str) -> str:
@@ -76,12 +77,18 @@ def get_workflow(db_path: str | Path, company_name: str) -> dict[str, Any] | Non
     return dict(row)
 
 
-def advance_icp(db_path: str | Path, company: dict[str, Any], manager: Any) -> dict[str, Any]:
+def advance_icp(
+    db_path: str | Path,
+    company: dict[str, Any],
+    manager: Any,
+    purpose: str = DEFAULT_PURPOSE,
+) -> dict[str, Any]:
     """Run the next unfinished step for one company.
 
     A step already stored is not run again. Waiting for approval does not
-    call a skill.
+    call a skill. purpose is what the company is being qualified for.
     """
+    asked = (purpose or "").strip() or DEFAULT_PURPOSE
     name = str(company.get("company_name") or company.get("name") or "").strip()
     key = company_key(name)
     if not key:
@@ -91,6 +98,9 @@ def advance_icp(db_path: str | Path, company: dict[str, Any], manager: Any) -> d
     if row["website"] and not website:
         website = row["website"]
     step = row["step"]
+    if step == "not_a_fit" and asked != _purpose(_findings(row)):
+        row = _save(db_path, key, step="qualify")
+        step = "qualify"
     if step in WAITING:
         return _view(row)
 
@@ -98,7 +108,10 @@ def advance_icp(db_path: str | Path, company: dict[str, Any], manager: Any) -> d
         result = manager.run_skill(
             QUALIFY,
             f"icp-workflow:{key}",
-            {"company": {**company, "company_name": name, "website": website}},
+            {
+                "company": {**company, "company_name": name, "website": website},
+                "purpose": asked,
+            },
         )
         if result.get("error"):
             return {
@@ -108,11 +121,21 @@ def advance_icp(db_path: str | Path, company: dict[str, Any], manager: Any) -> d
                 "step": "qualify",
                 "company": name,
             }
+        result = {**result, "purpose": asked}
         _save(db_path, key, step="decide", findings=result, website=website)
         step = "decide"
 
     if step == "decide":
         findings = _findings(_row(db_path, key))
+        if _ranking_failed(name, findings):
+            _save(db_path, key, step="qualify")
+            return {
+                "status": "error",
+                "message": "The model did not rank this company, so no note was written.",
+                "sent": False,
+                "step": "qualify",
+                "company": name,
+            }
         if _worth(name, findings):
             _save(db_path, key, step="draft")
             step = "draft"
@@ -129,6 +152,7 @@ def advance_icp(db_path: str | Path, company: dict[str, Any], manager: Any) -> d
                 "company_name": name,
                 "website": website,
                 "rationale": _rationale(name, findings),
+                "purpose": _purpose(findings),
             },
         )
         if result.get("error") or not result.get("draft"):
@@ -299,6 +323,10 @@ def _save(
     return row
 
 
+def _purpose(findings: dict[str, Any]) -> str:
+    return str(findings.get("purpose") or DEFAULT_PURPOSE).strip() or DEFAULT_PURPOSE
+
+
 def _findings(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {}
@@ -307,6 +335,19 @@ def _findings(row: dict[str, Any] | None) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _ranking_failed(company_name: str, findings: dict[str, Any]) -> bool:
+    """A checklist fallback is not a judgment, and it must not produce a note."""
+    key = company_key(company_name)
+    for item in findings.get("top_companies") or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("company_name") or item.get("name") or "")
+        if company_key(label) != key:
+            continue
+        return str(item.get("rationale") or "").startswith("llm_unavailable")
+    return False
 
 
 def _worth(company_name: str, findings: dict[str, Any]) -> bool:
@@ -347,9 +388,11 @@ def _view(row: dict[str, Any] | None) -> dict[str, Any]:
     name = row["company_name"]
     step = row["step"]
     if step == "not_a_fit":
-        message = f"{name} is not a fit. {_reason(name, _findings(row))}"
+        purpose = _purpose(_findings(row))
+        message = f"{name} is not a fit for {purpose}. {_reason(name, _findings(row))}"
     elif step == "awaiting_approval":
-        message = f"A note for {name} is in Companies. It has not been sent."
+        purpose = _purpose(_findings(row))
+        message = f"A note for {name} is in Companies. Qualified as {purpose}. It has not been sent."
     elif step == "approved":
         message = f"Approved the note for {name}. It was not sent."
     elif step == "declined":

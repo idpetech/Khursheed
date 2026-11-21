@@ -66,6 +66,7 @@ class HeyEmanAgent:
             'payload {"question": "the user\'s ask"}. '
             "Show that assessment as advice. It is not an approved decision, and it does not "
             "send anything or change the desk. "
+            "Do not answer a company, market, or opportunity assessment yourself. "
             "The blogger payload REQUIRES a "
             "'theme' string; derive it from the user's request and always include it, "
             'e.g. payload {"mode": "draft", "theme": "fractional CTOs"}. '

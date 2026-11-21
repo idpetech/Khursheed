@@ -9,13 +9,104 @@ import csv
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List
 from skills.base import Skill
 from skills.tavily_client import tavily_search
 
 
+def _is_cto_purpose(purpose: str) -> bool:
+    return "cto" in (purpose or "").lower()
+
+
+def _ranking_prompt(companies_summary: list, top_n: int, purpose: str) -> str:
+    """The CTO checklist applies only when the purpose is a CTO opportunity."""
+    companies = json.dumps(companies_summary, indent=2)
+    shape = """
+            {
+                "top_companies": [{
+                    "name": "company name",
+                    "rationale": "why it fits this purpose",
+                    "score": number
+                }],
+                "rejected": [{"name": "company", "reason": "why it does not fit this purpose"}]
+            }
+            Return ONLY valid JSON, no other text.
+            """
+    if _is_cto_purpose(purpose):
+        return f"""
+            Analyze and rank these companies as prospects for a FRACTIONAL CTO
+            to offer services to. The purpose is: {purpose}.
+
+            Ideal Customer Profile (higher rank = better fit):
+            - Does NOT already have a CTO (has_cto = "no" is best; "unknown" is acceptable; "yes" is a poor fit).
+            - Has NOT been acquired or merged. acquired = "yes" is a confirmed acquisition and is disqualifying. acquired = "likely" is an unverified search mention, not proof. Do not reject a company for "likely" alone. acquired = "unknown" means there is no evidence.
+            - Is actively hiring AI / ML engineers (is_hiring_ai = "likely" is a strong positive signal).
+            - Seed or early-series funding, 10-50 employees, in SaaS / FinTech / EdTech / Commerce.
+
+            Companies: {companies}
+
+            Rank by that profile. Return the top {top_n} companies in strict JSON format:
+            {shape}
+            """
+    return f"""
+            Decide whether each company is a fit for this purpose: {purpose}.
+            Judge that purpose. Do not apply a fractional CTO checklist.
+
+            Companies: {companies}
+
+            Keep a company only when it fits the purpose. Return the top {top_n} in strict JSON format:
+            {shape}
+            """
+
+
+def _states_acquired(company_name: str, content: str) -> bool:
+    """True when the text says this company was bought. A mention of acquisition is not enough."""
+    text = content.lower()
+    name = company_name.lower().strip()
+    if not name or name not in text:
+        return False
+    return any(
+        phrase in text
+        for phrase in (
+            f"{name} was acquired",
+            f"{name} has been acquired",
+            f"{name} acquired by",
+            f"acquired {name}",
+            f"acquisition of {name}",
+            "was acquired by",
+            "has been acquired by",
+        )
+    )
+
+
 logger = logging.getLogger(__name__)
+
+
+def _request_ranking(client, prompt: str) -> dict | None:
+    """Ask for one JSON ranking. An empty body is a miss, not a score."""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=2000,
+        temperature=0.1,
+        response_format={"type": "json_object"},
+    )
+    content = ""
+    if response.choices:
+        content = response.choices[0].message.content or ""
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text).strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 class IcpProspectorSkill(Skill):
@@ -26,8 +117,11 @@ class IcpProspectorSkill(Skill):
         payload = task.get("payload", {})
         one = self._one_company(payload.get("company"))
         if one is not None:
+            purpose = str(payload.get("purpose") or "CTO opportunity").strip() or "CTO opportunity"
             enriched = self._enrich_companies([one])
-            return self._rank_companies(enriched, 1)
+            ranked = self._rank_companies(enriched, 1, purpose)
+            ranked["purpose"] = purpose
+            return ranked
 
         # Extract configuration with defaults
         seed_path = payload.get("seed_path", "data/icp_seed.csv")
@@ -297,15 +391,15 @@ class IcpProspectorSkill(Skill):
         try:
             query = f'"{company_name}" acquired acquisition "acquired by"'
             results = tavily_search(query, max_results=3)
-            
+
             if results and "results" in results:
                 for result in results["results"]:
-                    content = f"{result.get('title', '')} {result.get('content', '')}".lower()
-                    if ("acquired" in content or "acquisition" in content) and company_name.lower() in content:
+                    content = f"{result.get('title', '')} {result.get('content', '')}"
+                    if _states_acquired(company_name, content):
                         return "likely"
-            
+
             return "unknown"
-            
+
         except Exception as e:
             logger.warning(f"Acquisition check failed for {company_name}: {e}")
             return "unknown"
@@ -330,16 +424,34 @@ class IcpProspectorSkill(Skill):
             logger.warning(f"AI hiring check failed for {company_name}: {e}")
             return "unknown"
 
-    def _rank_companies(self, companies: List[Dict[str, Any]], top_n: int) -> Dict[str, Any]:
+    def _rank_companies(
+        self,
+        companies: List[Dict[str, Any]],
+        top_n: int,
+        purpose: str = "CTO opportunity",
+    ) -> Dict[str, Any]:
         """Rank companies using LLM or fallback heuristic"""
         openai_key = os.getenv("OPENAI_API_KEY")
-        
-        if openai_key:
-            return self._rank_with_llm(companies, top_n, openai_key)
-        else:
-            return self._rank_with_heuristic(companies, top_n)
+        asked = (purpose or "").strip() or "CTO opportunity"
 
-    def _rank_with_llm(self, companies: List[Dict[str, Any]], top_n: int, openai_key: str) -> Dict[str, Any]:
+        if openai_key:
+            return self._rank_with_llm(companies, top_n, openai_key, asked)
+        if not _is_cto_purpose(asked):
+            return {
+                "error": f"Qualifying for {asked} needs the model.",
+                "top_companies": [],
+                "rejected": [],
+                "purpose": asked,
+            }
+        return self._rank_with_heuristic(companies, top_n)
+
+    def _rank_with_llm(
+        self,
+        companies: List[Dict[str, Any]],
+        top_n: int,
+        openai_key: str,
+        purpose: str = "CTO opportunity",
+    ) -> Dict[str, Any]:
         """Rank companies using OpenAI LLM"""
         try:
             import openai
@@ -360,58 +472,30 @@ class IcpProspectorSkill(Skill):
                     "is_hiring_ai": company["is_hiring_ai"]
                 })
             
-            prompt = f"""
-            Analyze and rank these {len(companies)} companies as prospects for a FRACTIONAL CTO
-            to offer services to.
+            prompt = _ranking_prompt(companies_summary, top_n, purpose)
+            
+            result = _request_ranking(client, prompt)
+            if result is None:
+                logger.warning("LLM ranking returned nothing. Asking once more.")
+                result = _request_ranking(client, prompt)
+            if result is None:
+                logger.warning("LLM ranking returned nothing after a retry.")
+                return {
+                    "error": "The model returned no ranking.",
+                    "top_companies": [],
+                    "rejected": [],
+                }
 
-            Ideal Customer Profile (higher rank = better fit):
-            - Does NOT already have a CTO (has_cto = "no" is best; "unknown" is acceptable; "yes" is a poor fit).
-            - Has NOT been acquired or merged (acquired = "no" is best; "unknown" acceptable; "yes" is disqualifying).
-            - Is actively hiring AI / ML engineers (is_hiring_ai = "likely" is a strong positive signal).
-            - Seed or early-series funding, 10-50 employees, in SaaS / FinTech / EdTech / Commerce.
-
-            Companies: {json.dumps(companies_summary, indent=2)}
-
-            Rank by ICP fit as described above (strongly reward NO existing CTO and NOT acquired).
-            Return the top {top_n} companies in strict JSON format:
-            
-            {{
-                "top_companies": [{{
-                    "name": "company name",
-                    "website": "website",
-                    "industry": "industry",
-                    "employee_count": number,
-                    "funding_stage": "stage",
-                    "has_cto": "yes/no/likely/unknown",
-                    "acquired": "yes/no/likely/unknown",
-                    "is_hiring_ai": "yes/no/likely/unknown",
-                    "signal_confidence": {{"verified": [], "likely": [], "unknown": []}},
-                    "rationale": "brief explanation",
-                    "score": number
-                }}],
-                "rejected": [{{"name": "company", "reason": "why rejected"}}]
-            }}
-            
-            Return ONLY valid JSON, no other text.
-            """
-            
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000,
-                temperature=0.1
-            )
-            
-            result_text = response.choices[0].message.content.strip()
-            result = json.loads(result_text)
-            
-            # Enrich with original company data
             enriched_result = self._enrich_llm_result(result, companies)
             return enriched_result
-            
+
         except Exception as e:
-            logger.warning(f"LLM ranking failed, falling back to heuristic: {e}")
-            return self._rank_with_heuristic(companies, top_n)
+            logger.warning(f"LLM ranking failed: {e}")
+            return {
+                "error": f"Ranking did not complete: {e}",
+                "top_companies": [],
+                "rejected": [],
+            }
 
     def _rank_with_heuristic(self, companies: List[Dict[str, Any]], top_n: int) -> Dict[str, Any]:
         """Rank companies using simple heuristic scoring"""

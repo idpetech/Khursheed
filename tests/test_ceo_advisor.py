@@ -11,37 +11,28 @@ from desk_work import add_commitment
 from desk_work import list_commitments
 from manager import Manager
 from skills.ceo_advisor import CeoAdvisorSkill
-from skills.ceo_advisor import SECTIONS
+from skills.ceo_advisor import _has_decision
 from skills.ceo_advisor import is_ceo_request
 from skills.ceo_advisor import question_from
 from skills.ceo_advisor import track_latest_advice
 
 
-ASSESSMENT = """## Executive assessment
-One retainer is the commercial goal. This is advice.
+ASSESSMENT = """The open commitment is the only commercial item on the desk.
 
-## Relevant facts and assumptions
-Fact: a commitment is open. No revenue figure is on the desk.
-
-## Opportunities
-Win the one retainer.
-
-## Risks and constraints
-A role is still waiting.
-
-## Available options
-Pursue the open commitment, or stop and reset the goal.
-
-## Recommended decision
-Keep the retainer as the only commercial goal.
-
-## Immediate next steps
-Next step: Call the prospect this week.
+Decision: CONDITIONAL GO
+Strategic rationale: The commitment is already chosen.
+Commercial rationale: A proposal is the path to revenue.
+Evidence: The desk lists one open commercial commitment.
+Unknowns: Whether the other party will pay.
+Resource commitment: The time to make the call.
+Opportunity cost: Other outreach waits.
+Next action: Call the prospect this week.
+Confidence: Medium, because the desk does not show a price.
 """
 
 
 class CeoAdvisorTests(unittest.TestCase):
-    def test_an_assessment_has_the_seven_sections_and_does_not_act(self):
+    def test_an_assessment_reaches_a_decision_and_does_not_act(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "t.db")
             Manager(db_path=db_path)
@@ -54,8 +45,8 @@ class CeoAdvisorTests(unittest.TestCase):
             complete.assert_called_once()
             self.assertFalse(result["executed"])
             self.assertTrue(result["advisory"])
-            for section in SECTIONS:
-                self.assertIn(f"## {section}", result["assessment"])
+            self.assertTrue(_has_decision(result["assessment"]))
+            self.assertIn("Decision: CONDITIONAL GO", result["assessment"])
             self.assertEqual([row["title"] for row in list_commitments(db_path)], ["Send the proposal"])
             pending = sqlite3.connect(db_path).execute("SELECT COUNT(*) FROM pending_actions").fetchone()[0]
             self.assertEqual(pending, 0)
@@ -88,6 +79,8 @@ class CeoAdvisorTests(unittest.TestCase):
             self.assertIn("Win one retainer", seen["context"])
             self.assertIn("Send the proposal", seen["context"])
             self.assertIn("Earlier recommendations", seen["context"])
+            self.assertIn("Omitted. This question is not about running the desk.", seen["context"])
+            self.assertIn("No external subject.", seen["context"])
 
     def test_a_missing_model_returns_an_error(self):
         with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
@@ -128,6 +121,8 @@ class CeoAdvisorTests(unittest.TestCase):
         names = [skill for task in prepared for skill in task["skills"]]
         self.assertNotIn("ceo_advisor", names)
         self.assertTrue(is_ceo_request("Give me a CEO assessment of IDPETECH."))
+        self.assertTrue(is_ceo_request("As a CEO evaluate 1Kiraana"))
+        self.assertFalse(is_ceo_request("What's urgent?"))
         self.assertEqual(question_from("Ask CEO Advisor"), "Give me a CEO assessment of the business as it stands.")
 
     def test_an_explicit_ask_without_a_model_does_not_run_a_skill(self):
@@ -144,6 +139,91 @@ class CeoAdvisorTests(unittest.TestCase):
             self.assertIn("needs the model", text)
             runs = sqlite3.connect(db_path).execute("SELECT COUNT(*) FROM skill_runs").fetchone()[0]
             self.assertEqual(runs, 0)
+
+
+    def test_an_external_subject_is_looked_up_without_the_desk_chores(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            db_path = str(root / "t.db")
+            profile = root / "principal.json"
+            profile.write_text(
+                json.dumps(
+                    {
+                        "goals": [
+                            "Win one fractional CTO retainer this quarter",
+                            "Publish one plainspoken LinkedIn post a week",
+                        ],
+                        "icp": "Seed to series B software companies that need a CTO.",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            Manager(db_path=db_path)
+            add_commitment(db_path, "Clear the inbox")
+            add_commitment(db_path, "Send the proposal")
+            seen = {}
+
+            def search(query, max_results=4, api_key=None):
+                seen.setdefault("queries", []).append(query)
+                return {
+                    "results": [
+                        {
+                            "title": "Story Protocol",
+                            "url": "https://www.story.foundation/",
+                            "content": "Programmable IP layer. Not a buyer of fractional CTO services.",
+                        }
+                    ]
+                }
+
+            def capture(question, context):
+                seen["context"] = context
+                return ASSESSMENT.replace("CONDITIONAL GO", "NO-GO")
+
+            question = "Assess whether Story Protocol is a customer, partner, or commercial opportunity for IDPETECH."
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test", "TAVILY_API_KEY": "test"}):
+                with patch("skills.ceo_advisor.tavily_search", search):
+                    with patch("skills.ceo_advisor._complete", capture):
+                        CeoAdvisorSkill().run(
+                            {
+                                "db_path": db_path,
+                                "profile_path": str(profile),
+                                "payload": {"question": question},
+                            }
+                        )
+            self.assertTrue(any("Story Protocol" in query for query in seen["queries"]))
+            self.assertNotIn("fractional CTO", " ".join(seen["queries"]))
+            context = seen["context"]
+            self.assertIn("Programmable IP layer", context)
+            self.assertIn("This describes IDPETECH, not the subject.", context)
+            self.assertIn("Send the proposal", context)
+            self.assertNotIn("Clear the inbox", context)
+            self.assertNotIn("LinkedIn", context)
+            self.assertNotIn("Seed to series B", context)
+            self.assertIn("Not the definition of a fit", context)
+
+    def test_a_missing_search_is_disclosed_and_not_invented(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            Manager(db_path=db_path)
+            seen = {}
+
+            def capture(question, context):
+                seen["context"] = context
+                return ASSESSMENT
+
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test", "TAVILY_API_KEY": ""}):
+                with patch("skills.ceo_advisor.tavily_search") as search:
+                    with patch("skills.ceo_advisor._complete", capture):
+                        result = CeoAdvisorSkill().run(
+                            {
+                                "db_path": db_path,
+                                "payload": {"question": "Assess FieldFactors as a customer for IDPETECH."},
+                            }
+                        )
+            search.assert_not_called()
+            self.assertIn("Research was not performed.", seen["context"])
+            self.assertTrue(result["assessment"].startswith("Research was not performed."))
+            self.assertFalse(result["researched"])
 
 
 if __name__ == "__main__":

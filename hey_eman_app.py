@@ -1000,8 +1000,13 @@ def _render_icp_candidate(manager: Manager, action: dict) -> None:
     existing = get_workflow(db_path, company_name)
     if existing and existing.get("step") not in {"qualify"}:
         st.caption(describe_workflow(existing))
-    add, qualify, skip = st.columns(3)
     action_id = action.get("action_id")
+    purpose = st.text_input(
+        "Qualify for",
+        value="CTO opportunity",
+        key=f"qualify-for-{action_id}",
+    )
+    add, qualify, skip = st.columns(3)
     if add.button("Add", key=f"icp-add-{action_id}", use_container_width=True):
         result = choose_icp_candidate(db_path, action_id, accept=True)
         st.session_state.last_ack = result.get("message") or "Added."
@@ -1016,8 +1021,8 @@ def _render_icp_candidate(manager: Manager, action: dict) -> None:
             "has_cto": str(payload.get("has_cto") or "unknown"),
             "acquired": str(payload.get("acquired") or "unknown"),
         }
-        with st.spinner(f"Qualifying {company_name}"):
-            result = advance_icp(db_path, company, manager)
+        with st.spinner(f"Qualifying {company_name} as {purpose or 'CTO opportunity'}"):
+            result = advance_icp(db_path, company, manager, purpose=purpose)
         st.session_state.last_ack = result.get("message") or "Qualified."
         st.rerun()
     if skip.button("Skip", key=f"icp-skip-{action_id}", use_container_width=True):

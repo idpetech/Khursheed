@@ -52,7 +52,8 @@ def _queue_company(db_path: str, company_name: str, payload: dict[str, Any]) -> 
 
     website = str(payload.get("website") or "").strip()
     rationale = str(payload.get("rationale") or "").strip()
-    body = _body(company_name, website)
+    purpose = str(payload.get("purpose") or "").strip()
+    body = _body(company_name, website, purpose, rationale)
     try:
         action_id = emit_priority_action(
             kind="outreach_draft",
@@ -89,7 +90,16 @@ def _latest_kept(db_path: str) -> tuple[str, str]:
     return str(first.get("title") or ""), str(first.get("url") or "")
 
 
-def _body(title: str, url: str) -> str:
+def _body(title: str, url: str, purpose: str = "", rationale: str = "") -> str:
     from desk_work import outreach_body
 
-    return outreach_body(title, url)
+    if "cto" in (purpose or "CTO opportunity").lower():
+        return outreach_body(title, url)
+    link = f"\n{url}\n" if url else "\n"
+    because = f"\n{rationale}\n" if rationale else "\n"
+    return (
+        f"Hello,\n\n"
+        f"I am looking at {title} as a {purpose}.{link}"
+        f"{because}\n"
+        "Haseeb"
+    )

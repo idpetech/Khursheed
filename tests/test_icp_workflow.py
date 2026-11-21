@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 from icp_workflow import advance_icp
 from icp_workflow import decide_icp_draft
@@ -16,6 +18,8 @@ from manager import Manager
 from schedule_sync import run_morning_skills
 from skills.base import Skill
 from skills.icp_prospector import IcpProspectorSkill
+from skills.icp_prospector import _ranking_prompt
+from skills.icp_prospector import _states_acquired
 from skills.outreach_draft import OutreachDraftSkill
 
 
@@ -82,6 +86,122 @@ class IcpWorkflowTests(unittest.TestCase):
             self.assertFalse(payload["send"])
             self.assertIn("Northwind", payload["body"])
 
+    def test_a_failed_ranking_writes_no_note(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, manager, prospector = _desk(
+                {
+                    "db_path": str(Path(tmpdir) / "t.db"),
+                    "error": "The model returned no ranking.",
+                    "top_companies": [],
+                    "rejected": [],
+                }
+            )
+            result = advance_icp(db_path, COMPANY, manager)
+            self.assertEqual(result["status"], "error")
+            self.assertIn("no ranking", result["message"])
+            self.assertEqual(prospector.calls, 1)
+            self.assertEqual(_notes(db_path), [])
+            self.assertEqual(get_workflow(db_path, "Northwind")["step"], "qualify")
+
+    def test_a_checklist_score_is_not_a_fit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, manager, _prospector = _desk(
+                {
+                    "db_path": str(Path(tmpdir) / "t.db"),
+                    "top_companies": [
+                        {
+                            "name": "Northwind",
+                            "rationale": "llm_unavailable - scored using heuristic",
+                            "score": 0,
+                        }
+                    ],
+                    "rejected": [],
+                }
+            )
+            result = advance_icp(db_path, COMPANY, manager)
+            self.assertEqual(result["status"], "error")
+            self.assertIn("no note", result["message"])
+            self.assertEqual(_notes(db_path), [])
+            self.assertEqual(get_workflow(db_path, "Northwind")["step"], "qualify")
+
+    def test_an_empty_model_reply_is_retried_and_then_reported(self):
+        skill = IcpProspectorSkill()
+        bodies = iter(["", "   ", "not json"])
+
+        class _Message:
+            def __init__(self, content: str) -> None:
+                self.content = content
+
+        class _Choice:
+            def __init__(self, content: str) -> None:
+                self.message = _Message(content)
+
+        class _Response:
+            def __init__(self, content: str) -> None:
+                self.choices = [_Choice(content)]
+
+        class _Completions:
+            def create(self, **_kwargs):
+                return _Response(next(bodies))
+
+        class _Chat:
+            completions = _Completions()
+
+        class _Client:
+            def __init__(self, api_key: str | None = None) -> None:
+                self.chat = _Chat()
+
+        company = {
+            "company_name": "FieldFactors",
+            "industry": "climate",
+            "employee_count": 0,
+            "funding_stage": "seed",
+            "has_cto": "likely",
+            "acquired": "likely",
+            "is_hiring_ai": "unknown",
+        }
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
+            with patch("openai.OpenAI", _Client):
+                result = skill._rank_companies([company], 1)
+        self.assertEqual(result["top_companies"], [])
+        self.assertIn("no ranking", result["error"])
+
+    def test_an_acquisition_word_is_not_proof_the_company_was_bought(self):
+        funding = "OneKiraana raises a seed round. Customer acquisition is the hard part."
+        bought = "OneKiraana was acquired by Meesho in a 2026 deal."
+        self.assertFalse(_states_acquired("OneKiraana", funding))
+        self.assertTrue(_states_acquired("OneKiraana", bought))
+
+    def test_a_named_purpose_is_what_gets_qualified(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, manager, prospector = _desk(
+                {"db_path": str(Path(tmpdir) / "t.db"), **_fit()}
+            )
+            result = advance_icp(db_path, COMPANY, manager, purpose="a distribution partner")
+            self.assertIn("Qualified as a distribution partner", result["message"])
+            body = json.loads(_notes(db_path)[0]["payload_json"])["body"]
+            self.assertIn("distribution partner", body)
+            self.assertNotIn("fractional CTO", body)
+            self.assertEqual(prospector.calls, 1)
+            prompt = _ranking_prompt([{"name": "OneKiraana"}], 1, "a distribution partner")
+            self.assertIn("a distribution partner", prompt)
+            self.assertNotIn("FRACTIONAL CTO", prompt)
+            cto_prompt = _ranking_prompt([{"name": "OneKiraana"}], 1, "CTO opportunity")
+            self.assertIn("FRACTIONAL CTO", cto_prompt)
+
+    def test_a_new_purpose_qualifies_a_rejected_company_again(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, manager, prospector = _desk(
+                {"db_path": str(Path(tmpdir) / "t.db"), **_reject()}
+            )
+            first = advance_icp(db_path, COMPANY, manager)
+            self.assertEqual(first["step"], "not_a_fit")
+            prospector.result = _fit()
+            second = advance_icp(db_path, COMPANY, manager, purpose="a distribution partner")
+            self.assertEqual(prospector.calls, 2)
+            self.assertEqual(second["step"], "awaiting_approval")
+            self.assertIn("distribution partner", second["message"])
+
     def test_a_rejected_company_stops_before_a_note(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path, manager, prospector = _desk({"db_path": str(Path(tmpdir) / "t.db"), **_reject()})
@@ -89,6 +209,7 @@ class IcpWorkflowTests(unittest.TestCase):
             again = advance_icp(db_path, COMPANY, manager)
             self.assertEqual(result["step"], "not_a_fit")
             self.assertIn("Already has a CTO", result["message"])
+            self.assertIn("not a fit for CTO opportunity", result["message"])
             self.assertFalse(result["sent"])
             self.assertEqual(again["step"], "not_a_fit")
             self.assertEqual(prospector.calls, 1)
@@ -146,7 +267,7 @@ class IcpWorkflowTests(unittest.TestCase):
 
         skill._seed_rows = seed
         skill._enrich_companies = lambda companies: [{**companies[0], "has_cto": "no"}]
-        skill._rank_companies = lambda companies, top_n: {
+        skill._rank_companies = lambda companies, top_n, purpose="CTO opportunity": {
             "top_companies": companies[:top_n],
             "rejected": [],
         }
@@ -244,6 +365,8 @@ if row and row["action_id"]:
 """
             app = AppTest.from_string(script, default_timeout=20)
             app.run()
+            field = next(item for item in app.text_input if item.label == "Qualify for")
+            self.assertEqual(field.value, "CTO opportunity")
             qualify = next(button for button in app.button if button.label == "Qualify")
             qualify.click().run()
             text = "\n".join(item.value for item in app.markdown)
