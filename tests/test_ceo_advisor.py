@@ -12,6 +12,8 @@ from desk_work import list_commitments
 from manager import Manager
 from skills.ceo_advisor import CeoAdvisorSkill
 from skills.ceo_advisor import _has_decision
+from skills.ceo_advisor import classify_request
+from skills.ceo_advisor import gather_research
 from skills.ceo_advisor import is_ceo_request
 from skills.ceo_advisor import question_from
 from skills.ceo_advisor import track_latest_advice
@@ -198,8 +200,9 @@ class CeoAdvisorTests(unittest.TestCase):
             self.assertIn("Send the proposal", context)
             self.assertNotIn("Clear the inbox", context)
             self.assertNotIn("LinkedIn", context)
-            self.assertNotIn("Seed to series B", context)
+            self.assertIn("not a rule for every opportunity", context)
             self.assertIn("Not the definition of a fit", context)
+            self.assertIn("not full pages", context)
 
     def test_a_missing_search_is_disclosed_and_not_invented(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -213,7 +216,7 @@ class CeoAdvisorTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test", "TAVILY_API_KEY": ""}):
                 with patch("skills.ceo_advisor.tavily_search") as search:
-                    with patch("skills.ceo_advisor._complete", capture):
+                    with patch("skills.ceo_advisor._complete") as complete:
                         result = CeoAdvisorSkill().run(
                             {
                                 "db_path": db_path,
@@ -221,9 +224,240 @@ class CeoAdvisorTests(unittest.TestCase):
                             }
                         )
             search.assert_not_called()
-            self.assertIn("Research was not performed.", seen["context"])
-            self.assertTrue(result["assessment"].startswith("Research was not performed."))
+            complete.assert_not_called()
+            self.assertEqual(result["decision"], "DEFER")
+            self.assertEqual(result["research_status"], "NOT_RUN")
+            self.assertIn("Research was not performed.", result["display"])
             self.assertFalse(result["researched"])
+
+    def test_natural_strategic_requests_route_to_the_advisor(self):
+        from hey_eman_app import _answer
+
+        self.assertEqual(classify_request("Should IDPETECH pursue Story Protocol?"), "strategic")
+        self.assertEqual(classify_request("Is this business worth entering?"), "strategic")
+        self.assertEqual(classify_request("Give me your strategic opinion."), "strategic")
+        self.assertEqual(classify_request("ceo: review the quarter"), "strategic")
+        self.assertEqual(classify_request("Tell me about Story Protocol."), "informational")
+        self.assertEqual(classify_request("Prepare a follow-up email to Story Protocol."), "operational")
+        self.assertEqual(classify_request("Story Protocol"), "ambiguous")
+        self.assertFalse(is_ceo_request("Tell me about Story Protocol."))
+        self.assertFalse(is_ceo_request("Prepare a follow-up email to Story Protocol."))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            manager = Manager(db_path=db_path)
+            manager.register(CeoAdvisorSkill())
+
+            class Agent:
+                def respond(self, *_args, **_kwargs):
+                    raise AssertionError("the chat model rewrote a strategic assessment")
+
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test", "TAVILY_API_KEY": ""}):
+                with patch("skills.ceo_advisor._complete") as complete:
+                    text = _answer("Should IDPETECH pursue Story Protocol?", manager, Agent())
+            complete.assert_not_called()
+            self.assertIn("Decision: DEFER", text)
+            self.assertIn("This is advice.", text)
+            self.assertNotIn("Executive Assessment", text)
+
+    def test_a_decision_is_saved_and_a_reassessment_links_to_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            manager = Manager(db_path=db_path)
+            manager.register(CeoAdvisorSkill())
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test", "TAVILY_API_KEY": "test"}):
+                with patch(
+                    "skills.ceo_advisor.tavily_search",
+                    return_value={
+                        "results": [
+                            {
+                                "title": "Story Protocol",
+                                "url": "https://www.story.foundation/",
+                                "content": "IP network.",
+                            }
+                        ]
+                    },
+                ):
+                    with patch("skills.ceo_advisor._complete", return_value=ASSESSMENT):
+                        first = manager.run_skill(
+                            "ceo_advisor", "t", {"question": "Assess Story Protocol."}
+                        )
+                        second = manager.run_skill(
+                            "ceo_advisor", "t", {"question": "Reassess Story Protocol."}
+                        )
+            self.assertEqual(first["decision"], "CONDITIONAL GO")
+            self.assertTrue(first["decision_id"])
+            self.assertEqual(second["decision_id"] != first["decision_id"], True)
+            conn = sqlite3.connect(db_path)
+            rows = conn.execute(
+                "SELECT decision_id, parent_decision_id, decision FROM strategic_decisions ORDER BY created_at"
+            ).fetchall()
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0][0], first["decision_id"])
+            self.assertEqual(rows[0][1], "")
+            self.assertEqual(rows[1][2], "CONDITIONAL GO")
+            self.assertEqual(rows[1][1], first["decision_id"])
+            from skills.ceo_advisor import answer_decision_lookup
+
+            text = answer_decision_lookup(db_path, "What did we decide about Story Protocol?")
+            self.assertIn("CONDITIONAL GO", text)
+            saved = track_latest_advice(db_path)
+            again = track_latest_advice(db_path)
+            self.assertFalse(saved.get("duplicate"))
+            self.assertTrue(again.get("duplicate"))
+            titles = [row["title"] for row in list_commitments(db_path)]
+            self.assertEqual(titles, ["Call the prospect this week."])
+
+    def test_invalid_model_output_is_not_stored_as_a_decision(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            Manager(db_path=db_path)
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
+                with patch("skills.ceo_advisor._complete", return_value="I think this is fine."):
+                    result = CeoAdvisorSkill().run(
+                        {"db_path": db_path, "payload": {"question": "Challenge my current priorities."}}
+                    )
+            self.assertIn("did not reach a decision", result["error"])
+            self.assertNotIn("decision_id", result)
+            conn = sqlite3.connect(db_path)
+            table = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='strategic_decisions'"
+            ).fetchone()
+            self.assertIsNone(table)
+
+    def test_primary_snippets_stay_ahead_and_a_draft_is_not_sent(self):
+        def search(query, max_results=4, api_key=None):
+            return {
+                "results": [
+                    {"title": "Coverage", "url": "https://news.example.com/story", "content": "A report."},
+                    {"title": "Home", "url": "https://www.story.foundation/", "content": "Official page."},
+                ]
+            }
+
+        with patch.dict(os.environ, {"TAVILY_API_KEY": "test"}):
+            with patch("skills.ceo_advisor.tavily_search", search):
+                research = gather_research("Assess Story Protocol.")
+        self.assertEqual(research["snippets"][0]["source_class"], "possible_primary")
+        self.assertIn("not full pages", research["note"])
+        self.assertEqual(research["research_status"], "COMPLETE")
+
+        draft = ASSESSMENT.replace("Call the prospect this week.", "Draft an outreach note.")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            manager = Manager(db_path=db_path)
+            manager.register(CeoAdvisorSkill())
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
+                with patch("skills.ceo_advisor._complete", return_value=draft):
+                    result = manager.run_skill(
+                        "ceo_advisor", "t", {"question": "Challenge my current priorities."}
+                    )
+            self.assertIn("outreach_draft", result["display"])
+            self.assertIn("does not send", result["display"])
+            names = [
+                row[0]
+                for row in sqlite3.connect(db_path).execute("SELECT skill_name FROM skill_runs")
+            ]
+            self.assertEqual(names, ["ceo_advisor"])
+
+    def test_a_missing_decision_line_is_recovered_when_the_judgment_is_stated(self):
+        unlabeled = """
+OneKiraana sells private-label infrastructure to kirana stores.
+
+**Strategically interesting:** Yes. The model is a real retail business.
+**Commercially real for someone:** Yes. Stores are the buyer.
+**Commercially real for IDPETECH:** Unknown. IDPETECH's fit is not established.
+**Deliverable by IDPETECH:** Unknown.
+**Worth the resource commitment:** Unknown.
+**Evidence:** A snippet reports seed funding.
+**Unknowns:** Whether IDPETECH can deliver anything this company would buy.
+**Assumptions:** No grocery practice is on file.
+**Conditions:** A named capability that a store would pay for.
+**Resource commitment:** None until that capability is named.
+**Opportunity cost:** Other work waits.
+**Next action:** Stop. Do not pursue this.
+**Confidence:** Medium, because the fit is unknown.
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            Manager(db_path=db_path)
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test", "TAVILY_API_KEY": "test"}):
+                with patch(
+                    "skills.ceo_advisor.tavily_search",
+                    return_value={"results": [{"title": "OneKiraana", "url": "https://onekiraana.com", "content": "Seed funding."}]},
+                ):
+                    with patch("skills.ceo_advisor._complete", return_value=unlabeled) as complete:
+                        result = CeoAdvisorSkill().run(
+                            {"db_path": db_path, "payload": {"question": "AS a CEO asses OneKiraana"}}
+                        )
+            self.assertEqual(complete.call_count, 1)
+            self.assertEqual(result["decision"], "DEFER")
+            self.assertIn("Decision: DEFER", result["display"])
+            self.assertIn("would pay for", result["next_action"])
+            self.assertTrue(result["decision_id"])
+
+    def test_a_stated_no_fit_without_a_decision_line_is_no_go(self):
+        unlabeled = """
+**Strategically interesting:** The market is real for operators.
+**Commercially real for IDPETECH:** No. IDPETECH cannot sell this.
+**Deliverable by IDPETECH:** No.
+**Evidence:** The subject is outside the stated capabilities.
+**Unknowns:** None that would change the fit.
+**Resource commitment:** None.
+**Opportunity cost:** None.
+**Next action:** Stop. Do not pursue this.
+**Confidence:** High, because the capability is absent.
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            Manager(db_path=db_path)
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
+                with patch("skills.ceo_advisor._complete", return_value=unlabeled):
+                    result = CeoAdvisorSkill().run(
+                        {"db_path": db_path, "payload": {"question": "Assess the car wash business."}}
+                    )
+            self.assertEqual(result["decision"], "NO-GO")
+            self.assertIn("Stop", result["next_action"])
+
+    def test_a_label_grid_is_written_as_sentences_and_an_assumed_fit_defers(self):
+        labeled = """
+OneKiraana helps kirana stores sell under their own brand. A snippet reports seed funding.
+
+Decision: NO-GO
+Strategic rationale:
+- Strategically interesting: UNKNOWN
+- Commercially real for someone: REPORTED
+- Commercially real for IDPETECH: ASSUMED
+- Deliverable by IDPETECH: ASSUMED
+- Worth the resource commitment: ASSUMED
+Commercial rationale:
+- Strategically interesting: UNKNOWN
+- Commercially real for someone: REPORTED
+- Commercially real for IDPETECH: ASSUMED
+- Deliverable by IDPETECH: ASSUMED
+- Worth the resource commitment: ASSUMED
+Evidence: A snippet reports seed funding.
+Unknowns: The fit of IDPETECH's capabilities with this company.
+Assumptions: IDPETECH lacks the capability.
+Conditions: None applicable.
+Resource commitment: Not applicable.
+Opportunity cost: Other work waits.
+Next action: Stop. Do not pursue this.
+Confidence: Medium, because the fit was not shown.
+"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            Manager(db_path=db_path)
+            with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
+                with patch("skills.ceo_advisor._complete", return_value=labeled):
+                    result = CeoAdvisorSkill().run(
+                        {"db_path": db_path, "payload": {"question": "Review the quarter."}}
+                    )
+        self.assertEqual(result["decision"], "DEFER")
+        self.assertIn("assumed, and the research did not show it", result["commercial_rationale"])
+        self.assertNotIn("UNKNOWN", result["display"])
+        self.assertEqual(result["display"].count("Decision:"), 1)
+        self.assertIn("kirana stores", result["display"])
+        self.assertIn("would pay for", result["next_action"])
 
 
 if __name__ == "__main__":

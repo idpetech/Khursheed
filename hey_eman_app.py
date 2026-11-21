@@ -2,6 +2,7 @@
 
 import hmac
 import json
+import logging
 import os
 from datetime import UTC
 from datetime import datetime
@@ -9,6 +10,8 @@ from datetime import timedelta
 from pathlib import Path
 
 import streamlit as st
+
+logger = logging.getLogger(__name__)
 
 import blog_themes
 from action_executor import approve_and_execute
@@ -32,7 +35,8 @@ from desk_work import choose_role
 from desk_work import complete_commitment
 from desk_work import decide_skill_request
 from desk_work import is_skill_request
-from skills.ceo_advisor import is_ceo_request
+from skills.ceo_advisor import answer_decision_lookup
+from skills.ceo_advisor import classify_request
 from skills.ceo_advisor import is_track_request
 from skills.ceo_advisor import question_from
 from skills.ceo_advisor import track_latest_advice
@@ -1274,7 +1278,13 @@ def _answer(query: str, manager: Manager, agent: HeyEmanAgent) -> str:
         answer = result.get("message") or "That next step was not tracked."
         record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
         return answer
-    if is_ceo_request(query):
+    kind = classify_request(query)
+    logger.info("desk route class=%s subject=%s", kind, query.strip()[:80])
+    if kind == "decision_lookup":
+        answer = answer_decision_lookup(str(manager._db_path), query)
+        record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
+        return answer
+    if kind == "strategic":
         answer = _ask_ceo(query, manager)
         record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
         return answer
@@ -1303,12 +1313,17 @@ def _ask_ceo(query: str, manager: Manager) -> str:
         task_id,
         {"question": question_from(query)},
     )
-    if result.get("error"):
+    if result.get("error") and not result.get("display"):
+        assessment = str(result.get("assessment") or "").strip()
+        if assessment:
+            return f"{assessment}\n\n{result['error']}"
         return str(result["error"])
-    assessment = str(result.get("assessment") or "").strip()
+    assessment = str(result.get("display") or result.get("assessment") or "").strip()
     if not assessment:
         return "CEO Advisor did not return an assessment."
-    return assessment + "\n\nThis is advice. Nothing was sent, spent, or saved."
+    if "This is advice." not in assessment:
+        assessment += "\n\nThis is advice. Nothing was sent, spent, or saved."
+    return assessment
 
 
 def _turn_local_date(created_at: str | None):

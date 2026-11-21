@@ -61,12 +61,11 @@ class HeyEmanAgent:
             "'icp_prospector' for companies already chosen, "
             "'lead_scout' for general lead generation, "
             "and 'blogger' for a LinkedIn draft. "
-            "Use 'ceo_advisor' for a strategic assessment, a challenge to priorities, "
-            "a prospect decision, or a quarterly review. Pass "
-            'payload {"question": "the user\'s ask"}. '
+            "Use 'ceo_advisor' only when the desk has already routed a strategic question to it. "
+            "If a ceo_advisor result is present, repeat its assessment unchanged. "
+            "Do not summarize it or drop its decision fields. "
             "Show that assessment as advice. It is not an approved decision, and it does not "
             "send anything or change the desk. "
-            "Do not answer a company, market, or opportunity assessment yourself. "
             "The blogger payload REQUIRES a "
             "'theme' string; derive it from the user's request and always include it, "
             'e.g. payload {"mode": "draft", "theme": "fractional CTOs"}. '

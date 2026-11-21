@@ -91,32 +91,54 @@ def ensure_desk_work(db_path: str | Path) -> Path:
             conn.execute(PURSUITS_SQL)
             conn.execute(REQUESTS_SQL)
             _ensure_pursuit_date(conn)
+            _ensure_commitment_decision(conn)
     finally:
         conn.close()
     return resolved
 
 
-def add_commitment(db_path: str | Path, title: str, due_on: str = "") -> dict[str, Any]:
+def add_commitment(
+    db_path: str | Path,
+    title: str,
+    due_on: str = "",
+    decision_id: str = "",
+) -> dict[str, Any]:
     text = (title or "").strip()
     if not text:
         return {"status": "error", "message": "Enter what you promised."}
     resolved = ensure_desk_work(db_path)
     now = datetime.now(UTC).isoformat()
-    commitment_id = str(uuid.uuid4())
+    link = (decision_id or "").strip()
     conn = sqlite3.connect(resolved, timeout=30.0)
     try:
+        if link:
+            existing = conn.execute(
+                """
+                SELECT commitment_id FROM commitments
+                WHERE decision_id = ? AND title = ? AND status = 'open'
+                """,
+                (link, text),
+            ).fetchone()
+            if existing:
+                return {
+                    "status": "ok",
+                    "message": "That action is already tracked.",
+                    "commitment_id": existing[0],
+                    "duplicate": True,
+                }
+        commitment_id = str(uuid.uuid4())
         with conn:
             conn.execute(
                 """
                 INSERT INTO commitments (
-                    commitment_id, title, due_on, status, created_at, updated_at
-                ) VALUES (?, ?, ?, 'open', ?, ?)
+                    commitment_id, title, due_on, status, created_at, updated_at, decision_id
+                ) VALUES (?, ?, ?, 'open', ?, ?, ?)
                 """,
-                (commitment_id, text, (due_on or "").strip(), now, now),
+                (commitment_id, text, (due_on or "").strip(), now, now, link),
             )
     finally:
         conn.close()
-    return {"status": "ok", "message": "Commitment saved.", "commitment_id": commitment_id}
+    return {"status": "ok", "message": "Commitment saved.", "commitment_id": commitment_id, "duplicate": False}
 
 
 def list_commitments(db_path: str | Path) -> list[dict[str, Any]]:
@@ -299,6 +321,12 @@ def _ensure_pursuit_date(conn: sqlite3.Connection) -> None:
     columns = {row[1] for row in conn.execute("PRAGMA table_info(pursuits)")}
     if "next_on" not in columns:
         conn.execute("ALTER TABLE pursuits ADD COLUMN next_on TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_commitment_decision(conn: sqlite3.Connection) -> None:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(commitments)")}
+    if "decision_id" not in columns:
+        conn.execute("ALTER TABLE commitments ADD COLUMN decision_id TEXT NOT NULL DEFAULT ''")
 
 
 def _parse_date(value: str) -> date | None:
