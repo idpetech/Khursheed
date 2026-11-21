@@ -32,6 +32,10 @@ from desk_work import choose_role
 from desk_work import complete_commitment
 from desk_work import decide_skill_request
 from desk_work import is_skill_request
+from skills.ceo_advisor import is_ceo_request
+from skills.ceo_advisor import is_track_request
+from skills.ceo_advisor import question_from
+from skills.ceo_advisor import track_latest_advice
 from desk_work import list_commitments
 from desk_work import list_pursuits
 from desk_work import morning_focus
@@ -1260,6 +1264,15 @@ def _answer(query: str, manager: Manager, agent: HeyEmanAgent) -> str:
         answer = result.get("message") or "Say what the skill should do."
         record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
         return answer
+    if is_track_request(query):
+        result = track_latest_advice(str(manager._db_path))
+        answer = result.get("message") or "That next step was not tracked."
+        record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
+        return answer
+    if is_ceo_request(query):
+        answer = _ask_ceo(query, manager)
+        record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
+        return answer
     if os.getenv("OPENAI_API_KEY"):
         return agent.respond(query, session_id=SESSION_ID)
     answer = _handle_query(query, manager)
@@ -1271,7 +1284,26 @@ SUGGESTED_PROMPTS = [
     "What's urgent?",
     "Give me the daily brief",
     "Draft a LinkedIn post about fractional CTOs",
+    "Ask CEO Advisor",
 ]
+
+
+def _ask_ceo(query: str, manager: Manager) -> str:
+    """Run the advisor directly. A missing model does not fall through to other skills."""
+    if not os.getenv("OPENAI_API_KEY", "").strip():
+        return "CEO Advisor needs the model. Nothing was assessed."
+    task_id = f"ceo-advisor-{datetime.now(UTC).isoformat()}"
+    result = manager.run_skill(
+        "ceo_advisor",
+        task_id,
+        {"question": question_from(query)},
+    )
+    if result.get("error"):
+        return str(result["error"])
+    assessment = str(result.get("assessment") or "").strip()
+    if not assessment:
+        return "CEO Advisor did not return an assessment."
+    return assessment + "\n\nThis is advice. Nothing was sent, spent, or saved."
 
 
 def _turn_local_date(created_at: str | None):

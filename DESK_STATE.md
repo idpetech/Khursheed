@@ -11,6 +11,7 @@ The weekly post already waits for a yes.
 - The same rule is what the brief, the Telegram text, Now, and the morning run use. A kept role can store a next-step date.
 - One company can be qualified from Companies. Qualify writes the findings, and a note waits there until Approve or Not now. Approving records consent and does not send the note. The morning run only finishes a company already past qualify.
 - The desk pages are Ask Enaam, Now, Companies, Mail, Content, and Task log. Now holds the morning line, waiting roles, and anything that needs a decision. Companies holds the ICP names. Mail holds ordinary notices and bills. On a phone the page names sit in a menu. The chips are need-you, companies, mail, and the brief.
+- CEO Advisor answers a strategic ask from Ask Enaam. The assessment is advice: it is stored with the skill run and is not a decision, a commitment, or a message. Saying "track this" saves only the recommended next step. The morning run does not call it.
 
 ## Left, in order
 

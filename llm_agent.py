@@ -60,7 +60,13 @@ class HeyEmanAgent:
             "'calendar_prep' when the user asks about the next meeting, "
             "'icp_prospector' for companies already chosen, "
             "'lead_scout' for general lead generation, "
-            "and 'blogger' for a LinkedIn draft. The blogger payload REQUIRES a "
+            "and 'blogger' for a LinkedIn draft. "
+            "Use 'ceo_advisor' for a strategic assessment, a challenge to priorities, "
+            "a prospect decision, or a quarterly review. Pass "
+            'payload {"question": "the user\'s ask"}. '
+            "Show that assessment as advice. It is not an approved decision, and it does not "
+            "send anything or change the desk. "
+            "The blogger payload REQUIRES a "
             "'theme' string; derive it from the user's request and always include it, "
             'e.g. payload {"mode": "draft", "theme": "fractional CTOs"}. '
             "Use mode='publish' only when the user explicitly says publish. "
