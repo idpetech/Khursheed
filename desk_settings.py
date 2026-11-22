@@ -382,6 +382,38 @@ def remove_icp_company(db_path: str | Path, company_name: str) -> dict[str, Any]
     return {"status": "ok", "message": f"Removed {name}."}
 
 
+def _open_icp_candidates(db_path: Path) -> list[dict[str, str]]:
+    """Open company suggestions. The stored payload is left as it was saved."""
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT action_id, title, payload_json
+            FROM pending_actions
+            WHERE status = 'pending' AND action_type = 'icp_candidate'
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    found: list[dict[str, str]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        found.append(
+            {
+                "action_id": row["action_id"],
+                "company_name": str(payload.get("company_name") or row["title"] or "").strip(),
+                "website": str(payload.get("website") or "").strip(),
+            }
+        )
+    return found
+
+
 def choose_icp_candidate(db_path: str | Path, action_id: str, accept: bool) -> dict[str, Any]:
     """Add a suggested company to the ICP list, or skip it."""
     resolved = resolve_db_path(db_path)
@@ -391,10 +423,23 @@ def choose_icp_candidate(db_path: str | Path, action_id: str, accept: bool) -> d
     payload = json.loads(action["payload_json"] or "{}")
     name = str(payload.get("company_name") or action["title"] or "Company").strip()
     if accept:
+        from skills.icp_finder import _websites_to_keep
+
+        peers = _open_icp_candidates(resolved)
+        index = next((i for i, peer in enumerate(peers) if peer["action_id"] == action_id), None)
+        if index is None:
+            peers.append(
+                {
+                    "action_id": action_id,
+                    "company_name": name,
+                    "website": str(payload.get("website") or "").strip(),
+                }
+            )
+            index = len(peers) - 1
         add_icp_company(
             resolved,
             name,
-            str(payload.get("website") or ""),
+            _websites_to_keep(peers)[index],
             str(payload.get("industry") or ""),
             _as_int(payload.get("employee_count"), 0),
             str(payload.get("funding_stage") or ""),

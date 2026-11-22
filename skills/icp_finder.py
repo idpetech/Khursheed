@@ -196,6 +196,25 @@ def _drop_shared_sites(companies: list[dict[str, Any]]) -> None:
             company["website"] = ""
 
 
+def _websites_to_keep(companies: list[dict[str, Any]]) -> list[str]:
+    """Sites safe to show or pass on. A shared list page stays blank.
+
+    Does not change the rows it is given. A saved suggestion keeps its payload.
+    """
+    shaped = [
+        {
+            "company_name": str(company.get("company_name") or ""),
+            "website": str(company.get("website") or "").strip(),
+        }
+        for company in companies
+    ]
+    _drop_shared_sites(shaped)
+    return [
+        _own_website(row["company_name"], str(row.get("website") or ""))
+        for row in shaped
+    ]
+
+
 def _name_key(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
 
