@@ -1,8 +1,6 @@
 # Enaam final-state assessment
 
-Assessed 22 Nov 2026 against the live desk. The running application is `hey_eman_app.py` (Streamlit, `.venv`, port 8510). It does not import `enaam/`. Remote at the time of this note: `d14a3e0` on `cleanup/codebase-fixes`.
-
-This note describes the desk that exists. Later phases are not built here.
+Assessed 22 Nov 2026 against the live desk. The running application is `hey_eman_app.py` (Streamlit, `.venv`, port 8510). It does not import `enaam/`. Current status is `ENAAM_IMPLEMENTATION_STATUS.md`. Code on the remote is `e09c346` on `cleanup/codebase-fixes`.
 
 ## 1. Current architecture
 
@@ -54,7 +52,7 @@ The older stack (`enaam_ui.py`, `enaam_admin.py`, `enaam_skill_api.py`, `enaam/`
 ## 6. Reliability and observability gaps
 
 - P1. No token or cost ledger. A failed model call is logged. The CEO path logs duration. `skill_runs` stores `execution_time_ms`.
-- P1. No recorded restore drill for `khursheed.db`. Railway expects a volume at `/data`. The laptop uses the project file. Those are two databases.
+- P1. Backup and restore steps are in the operations note. A laptop copy checked clean and was deleted. The live file was not replaced. The Railway volume was not copied. No off-machine copy is kept.
 - P2. `tests/test_chief_of_staff_coverage.py` used to patch `MarkdownFileNotifier` on modules that call `daily_brief_notifier`. Those two patches now target `daily_brief_notifier`. The module's 15 tests pass.
 - P2. No watchdog. A code change is invisible until restart.
 
@@ -80,7 +78,7 @@ Keep the current shape.
 ## 9. Prioritized backlog
 
 1. P2. Leave historical CEO rows in `hey-eman`. Do not rewrite them.
-2. P1. Write the copy and restore steps for `khursheed.db` and record that they have not been drilled. Phase 5.
+2. P1. Keep an off-machine copy of `khursheed.db`. The steps are written. The replacement itself has not been performed.
 3. P2. Leave client isolation until a second client is real.
 4. P3. Do not add providers, agents, or a task schema until a current skill cannot do the job.
 

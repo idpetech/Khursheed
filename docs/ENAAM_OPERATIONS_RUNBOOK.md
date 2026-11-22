@@ -1,6 +1,6 @@
 # Enaam operations
 
-How the desk is run today. A restore has not been drilled. That drill is a later phase.
+How the desk is run today. The copy command below was checked once on the laptop. The live file was not replaced, and no copy was kept. The Railway volume was not copied.
 
 ## Run
 
@@ -28,11 +28,32 @@ The laptop database is `khursheed.db` in the project directory. Railway uses `KH
 
 ## Backup
 
-Stop the desk, then copy the database file and keep the copy off the machine. Start the desk again. A copy taken while the process is writing can be checked with `sqlite3 khursheed.db "PRAGMA integrity_check;"`. `-wal` and `-shm` files belong with the copy if the desk was not stopped. This copy step has not been rehearsed against a restore.
+The laptop file is `khursheed.db` in the project directory. On Railway the file is `/data/khursheed.db` because `KHURSHEED_DB_PATH` is set in the image. A git push does not copy either file. Keep a Railway copy off the volume, and keep a laptop copy outside this project. Putting one file in the other's place replaces that database.
+
+From the project directory, with the desk running or stopped:
+
+```
+sqlite3 khursheed.db ".backup 'khursheed-copy.db'"
+sqlite3 khursheed-copy.db "PRAGMA integrity_check;"
+```
+
+`integrity_check` should print `ok`. Move `khursheed-copy.db` off the machine, then delete the copy that was left in the project directory. `.backup` includes committed pages, so the `-wal` and `-shm` files do not need to travel with it.
+
+On the Railway service the same two commands use `/data/khursheed.db`. Take the resulting file off the volume. Leave the laptop file where it is.
+
+On 22 Nov 2026 the laptop command was run into a temporary file. `integrity_check` printed `ok`. That file was deleted. Nothing was kept off the machine, and `/data/khursheed.db` was not read.
 
 ## Restore
 
-Stop the desk. Replace `khursheed.db` with the copy. Start the desk. Confirm a known bill or decision is still listed before deleting the previous file. This has not been rehearsed.
+This replacement has not been performed.
+
+Stop the process that has the file open. On the laptop that is the listener on port 8510. On Railway that is the Khursheed service.
+
+Move the current `khursheed.db`, `khursheed.db-wal`, and `khursheed.db-shm` aside. Do not delete them yet. On Railway those names are under `/data`.
+
+Put the backup in place as `khursheed.db` (on Railway, `/data/khursheed.db`). Start the desk and sign in. Confirm a bill or a decision you already know is still listed. After that, the files you moved aside can be deleted.
+
+A page that loads is not that confirmation. The known row is.
 
 ## Morning
 
