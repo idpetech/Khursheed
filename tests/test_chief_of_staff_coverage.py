@@ -511,7 +511,7 @@ class AgentCoverageTests(unittest.TestCase):
                 _Response(content="Summarized."),
             ]
         )
-        with patch("llm_agent.MarkdownFileNotifier", RecordingNotifier):
+        with patch("llm_agent.daily_brief_notifier", return_value=RecordingNotifier()):
             self.assertEqual(agent.respond("summary"), "Summarized.")
 
         agent._client = _Client(
@@ -668,7 +668,7 @@ class AskCoverageTests(unittest.TestCase):
         manager = Manager(db_path=db_path)
         manager.register(SifterStub())
         manager.load_tasks = lambda _path: [{"id": "only", "skills": ["sifter"], "payload": {}}]
-        with patch("ask.MarkdownFileNotifier", RecordingNotifier):
+        with patch("ask.daily_brief_notifier", return_value=RecordingNotifier()):
             self.assertIn("Executive Summary", ask._handle_query("executive summary", manager))
         self.assertIn("only", ask._handle_query("todos", manager))
         self.assertIn("Email check", ask._handle_query("check emails", manager))

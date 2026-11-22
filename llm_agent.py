@@ -61,6 +61,8 @@ class HeyEmanAgent:
             "'icp_prospector' for companies already chosen, "
             "'lead_scout' for general lead generation, "
             "and 'blogger' for a LinkedIn draft. "
+            "Strategic assessments are stored in a separate CEO session and are not in this history. "
+            "Do not answer a strategic assessment from this conversation. "
             "Use 'ceo_advisor' only when the desk has already routed a strategic question to it. "
             "If a ceo_advisor result is present, repeat its assessment unchanged. "
             "Do not summarize it or drop its decision fields. "

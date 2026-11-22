@@ -263,6 +263,26 @@ class CeoAdvisorTests(unittest.TestCase):
             self.assertIn("Decision: DEFER", text)
             self.assertIn("This is advice.", text)
             self.assertNotIn("Executive Assessment", text)
+            session = sqlite3.connect(db_path).execute(
+                "SELECT session_id FROM chat_turns ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            self.assertEqual(session[0], "hey-eman-ceo")
+
+            class Ops:
+                def respond(self, query, session_id="hey-eman"):
+                    from chat_memory import record_turn
+
+                    record_turn(session_id, query, "Inbox is clear.", db_path=db_path)
+                    return "Inbox is clear."
+
+            _answer("What's urgent?", manager, Ops())
+            sessions = [
+                row[0]
+                for row in sqlite3.connect(db_path).execute(
+                    "SELECT session_id FROM chat_turns ORDER BY created_at"
+                )
+            ]
+            self.assertEqual(sessions, ["hey-eman-ceo", "hey-eman"])
 
     def test_a_decision_is_saved_and_a_reassessment_links_to_it(self):
         with tempfile.TemporaryDirectory() as tmpdir:

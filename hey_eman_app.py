@@ -74,6 +74,7 @@ from skills_bootstrap import register_default_skills
 
 
 SESSION_ID = "hey-eman"
+CEO_SESSION_ID = "hey-eman-ceo"
 
 
 # ---------------------------------------------------------------------------
@@ -1335,17 +1336,17 @@ def _answer(query: str, manager: Manager, agent: HeyEmanAgent) -> str:
     if is_track_request(query):
         result = track_latest_advice(str(manager._db_path))
         answer = result.get("message") or "That next step was not tracked."
-        record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
+        record_turn(CEO_SESSION_ID, query, answer, db_path=str(manager._db_path))
         return answer
     kind = classify_request(query)
     logger.info("desk route class=%s subject=%s", kind, query.strip()[:80])
     if kind == "decision_lookup":
         answer = answer_decision_lookup(str(manager._db_path), query)
-        record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
+        record_turn(CEO_SESSION_ID, query, answer, db_path=str(manager._db_path))
         return answer
     if kind == "strategic":
         answer = _ask_ceo(query, manager)
-        record_turn(SESSION_ID, query, answer, db_path=str(manager._db_path))
+        record_turn(CEO_SESSION_ID, query, answer, db_path=str(manager._db_path))
         return answer
     if os.getenv("OPENAI_API_KEY"):
         return agent.respond(query, session_id=SESSION_ID)
@@ -1398,15 +1399,27 @@ def _turn_local_date(created_at: str | None):
     return dt.astimezone().date()
 
 
+def _desk_turns(db_path: str, limit: int = 200) -> list[dict]:
+    """Show both sessions. The Chief of Staff model only reads its own."""
+    turns = []
+    for session_id, role in ((SESSION_ID, "cos"), (CEO_SESSION_ID, "ceo")):
+        for turn in load_turns(session_id, db_path=db_path, limit=limit):
+            turns.append({**turn, "desk_role": role})
+    turns.sort(key=lambda turn: turn.get("created_at") or "")
+    return turns[-limit:]
+
+
 def _render_turn(turn: dict) -> None:
     with st.chat_message("user"):
         st.markdown(turn["user_content"])
     with st.chat_message("assistant"):
+        if turn.get("desk_role") == "ceo":
+            st.caption("CEO")
         st.markdown(turn["assistant_content"])
 
 
 def _render_conversation(manager: Manager, agent: HeyEmanAgent) -> None:
-    turns = load_turns(SESSION_ID, db_path=str(manager._db_path), limit=200)
+    turns = _desk_turns(str(manager._db_path))
     today = datetime.now().astimezone().date()
     today_turns = [t for t in turns if _turn_local_date(t.get("created_at")) == today]
     older_turns = [t for t in turns if _turn_local_date(t.get("created_at")) != today]
