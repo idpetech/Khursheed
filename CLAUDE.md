@@ -10,6 +10,8 @@ It reads mail, stores bills, sends WhatsApp, and answers chat. It does not impor
 
 Do not start `scripts/start_enaam_services.sh`. It launches a different stack and treats port 8510 as a conflict it may kill.
 
+The bills and subscriptions list (`_render_billers`) stays in the sidebar Config, inside the scrolling settings, directly under "Days of mail to scan". Mail and Now show results only. Do not move that list onto Mail or Now, and do not remove Add, Remove, or the saved rows, without explicit user consent. Remember sender on a message may add to this list. It is not a second list.
+
 ## The other stack
 
 `enaam_ui.py` (8501), `enaam_admin.py` (8502), `enaam_skill_api.py` (5001), and `enaam/mcp_server.py` (8080) are an older stack still in the tree. Root modules `enaam_adapter.py`, `enaam_orchestrator.py`, and `enaam_skill_loader.py` belong to that stack. `enaam/integrations/khursheed_bridge.py` reaches them with a `sys.path` append.

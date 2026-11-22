@@ -123,6 +123,49 @@ class BillerTests(unittest.TestCase):
                 self.assertEqual(brief_path(), resolved.parent / "executive_summary.md")
             self.assertTrue(str(resolve_db_path("other.db")).endswith("other.db"))
 
+    def test_config_keeps_the_biller_list_and_a_notice_can_remember_the_sender(self):
+        from streamlit.testing.v1 import AppTest
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            root = str(Path(__file__).resolve().parents[1])
+            script = f"""
+import sys
+sys.path.insert(0, {root!r})
+import streamlit as st
+from manager import Manager
+from hey_eman_app import _render_mail_page, _render_research
+from priority_inbox import emit_priority_action
+
+db = {db_path!r}
+manager = Manager(db_path=db)
+emit_priority_action(
+    kind="renewal_notice",
+    title="Cursor renewal",
+    description="Your subscription renews",
+    payload={{"from": "billing@northwind-bills.com", "subject": "Northwind renewal"}},
+    priority=1,
+    source_key="notice:cursor",
+    db_path=db,
+)
+_render_research(db)
+_render_mail_page(manager)
+"""
+            app = AppTest.from_string(script, default_timeout=20)
+            app.run()
+            text = "\n".join(item.value for item in app.markdown)
+            labels = [item.label for item in app.expander]
+            self.assertEqual(
+                sum(label.startswith("Bills and subscriptions") for label in labels),
+                1,
+            )
+            self.assertIn("paypal.com", text)
+            self.assertEqual(sum(item.label == "Add biller" for item in app.button), 1)
+            self.assertTrue(any(item.label == "Remember sender" for item in app.button))
+            remember = next(item for item in app.button if item.label == "Remember sender")
+            remember.click().run()
+            self.assertIsNotNone(find_biller(db_path, "billing@northwind-bills.com"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ from action_executor import approve_and_execute
 from bill_feedback import reject_not_a_bill
 from billers import add_biller
 from billers import list_billers
+from billers import remove_biller
 from desk_settings import add_icp_company
 from desk_settings import choose_icp_candidate
 from desk_settings import get_int
@@ -572,14 +573,31 @@ def _render_bill_question(db_path: str, action: dict, key_prefix: str) -> None:
         result = reject_not_a_bill(db_path, action["action_id"], reviewed_by="desk")
         st.session_state.last_ack = result.get("message") or "Marked not a bill."
         st.rerun()
-    sender = payload.get("from") or ""
-    if sender and st.button("Remember sender", key=f"{key_prefix}-remember-{action.get('action_id')}"):
-        result = add_biller(db_path, sender, kind="bill")
+    _remember_sender(
+        db_path,
+        payload.get("from") or "",
+        f"{key_prefix}-remember-{action.get('action_id')}",
+        kind="bill",
+    )
+
+
+def _remember_sender(db_path: str, sender: str, key: str, kind: str = "bill") -> None:
+    """Teach the filter this sender. Nothing is sent."""
+    if not sender:
+        return
+    if st.button("Remember sender", key=key):
+        result = add_biller(db_path, sender, kind=kind)
         st.session_state.last_ack = result.get("message") or "Sender saved."
         st.rerun()
 
 
-def _render_notice_buttons(db_path: str, action_id: str, key_prefix: str) -> None:
+def _render_notice_buttons(
+    db_path: str,
+    action_id: str,
+    key_prefix: str,
+    sender: str = "",
+    kind: str = "bill",
+) -> None:
     """Close a statement, subscription, or renewal. Nothing here sends mail."""
     done, later, dismiss = st.columns(3)
     if done.button("Done", key=f"{key_prefix}-done", use_container_width=True):
@@ -592,6 +610,7 @@ def _render_notice_buttons(db_path: str, action_id: str, key_prefix: str) -> Non
         result = reject_not_a_bill(db_path, action_id, reviewed_by="desk")
         st.session_state.last_ack = result.get("message") or "Dismissed."
         st.rerun()
+    _remember_sender(db_path, sender, f"{key_prefix}-remember", kind=kind)
 
 
 def _render_commitments(db_path: str, commitments: list[dict]) -> None:
@@ -795,6 +814,8 @@ def _render_research(db_path: str) -> None:
         st.checkbox("Include ICP companies in the morning run", key="desk_icp_enabled")
         st.caption("Matching companies are offered on Companies. Add keeps one. Skip leaves it off the list.")
         st.number_input("Days of mail to scan", min_value=1, max_value=30, step=1, key="desk_mail_days")
+        # Stays here. Mail and Now are results. Do not move this list without explicit consent.
+        _render_billers(db_path)
         st.number_input(
             "Days of research to include in the brief",
             min_value=1,
@@ -866,10 +887,9 @@ def _render_research(db_path: str) -> None:
                 result = remove_icp_company(db_path, row["company_name"])
                 st.session_state.last_ack = result.get("message") or "Removed."
                 st.rerun()
-    _render_billers(db_path)
 
 
-def _render_billers(db_path: str) -> None:
+def _render_billers(db_path: str, *, expanded: bool = True) -> None:
     """Let the desk keep the domains that must always be read for a bill."""
     billers = list_billers(db_path)
     kind_labels = {
@@ -877,7 +897,7 @@ def _render_billers(db_path: str) -> None:
         "card_statement": "Card statement",
         "subscription": "Subscription",
     }
-    with st.expander(f"Billers ({len(billers)})", expanded=False):
+    with st.expander(f"Bills and subscriptions ({len(billers)})", expanded=expanded):
         st.caption(
             "Mail from these domains is always checked, even when the wording is new. "
             "A subdomain counts: mail2.jea.com matches jea.com. "
@@ -1067,7 +1087,13 @@ def _render_review_item(manager: Manager, action: dict, opened: bool) -> None:
         elif action_type == "skill_request":
             _render_skill_request(db_path, action)
         elif action_type in {"renewal_notice", "mail_notice"}:
-            _render_notice_buttons(db_path, action["action_id"], f"review-{action.get('action_id')}")
+            _render_notice_buttons(
+                db_path,
+                action["action_id"],
+                f"review-{action.get('action_id')}",
+                sender=mail_origin(action)["sender"],
+                kind="subscription" if action_type == "renewal_notice" else "bill",
+            )
         elif action_type in BILL_KINDS:
             _render_bill_question(db_path, action, "review")
         else:

@@ -20,3 +20,4 @@ Live desk
 - The running app is hey_eman_app.py on port 8510, virtualenv .venv.
 - enaam_ui.py, enaam_admin.py, enaam_skill_api.py, and scripts/start_enaam_services.sh are an older stack. Do not start that script, and do not treat it as production.
 - Read CLAUDE.md before any architecture change.
+- The bills and subscriptions list stays in Config, inside the scrolling settings, under "Days of mail to scan". Mail and Now show results only. Do not move or remove that list without explicit user consent.
