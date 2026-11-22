@@ -14,6 +14,7 @@ from unittest.mock import patch
 from action_executor import approve_and_execute
 from action_executor import revise_action_payload
 from executive_summary import generate_executive_summary
+from hey_eman_app import _run_line
 from llm_agent import HeyEmanAgent
 from manager import Manager
 from open_loops import close_open_loop
@@ -253,6 +254,17 @@ class MemoryTests(unittest.TestCase):
             user_texts = [message["content"] for message in messages if message["role"] == "user"]
             self.assertIn("first question", user_texts)
             self.assertIn("second question", user_texts)
+
+
+class TaskLogTests(unittest.TestCase):
+    def test_a_failed_run_shows_duration_and_error_and_a_completed_run_does_not(self):
+        done = _run_line("sifter", "task-1", "2026-11-22T12:00:00", "completed", 40, "mailbox body")
+        self.assertEqual(done, "`sifter` for `task-1` at 2026-11-22T12:00:00")
+        self.assertNotIn("mailbox", done)
+        failed = _run_line("blogger", "chat-publish", "2026-11-22T12:01:00", "refused", 12, "Nothing was posted.")
+        self.assertIn("(refused)", failed)
+        self.assertIn("12 ms", failed)
+        self.assertIn("Nothing was posted.", failed)
 
 
 class ApprovalTests(unittest.TestCase):

@@ -335,6 +335,45 @@ _render_pursuits(manager, list_pursuits(db))
             self.assertEqual(list_pursuits(db_path)[0]["next_on"], "2026-11-19")
             self.assertFalse(morning_focus(db_path, TODAY)["pause_research"])
 
+    def test_a_due_commitment_and_a_still_conditional_decision_join_the_line(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            Manager(db_path=db_path)
+            add_commitment(db_path, "Call them later", "2026-11-25")
+            add_commitment(db_path, "Send the note", "")
+            quiet = morning_focus(db_path, TODAY)
+            self.assertEqual(quiet["lines"], ["No kept role yet."])
+            add_commitment(db_path, "Send the note", "2026-11-18")
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE strategic_decisions (
+                        decision_id TEXT PRIMARY KEY,
+                        subject TEXT NOT NULL,
+                        subject_key TEXT NOT NULL,
+                        decision TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO strategic_decisions
+                        (decision_id, subject, subject_key, decision, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        ("old", "Northwind", "northwind", "CONDITIONAL GO", "2026-11-01"),
+                        ("new", "Northwind", "northwind", "NO-GO", "2026-11-02"),
+                        ("open", "Story Protocol", "story", "CONDITIONAL GO", "2026-11-03"),
+                    ],
+                )
+            focus = morning_focus(db_path, TODAY)
+            self.assertIn("Commitment overdue: Send the note, due 2026-11-18.", focus["lines"])
+            self.assertIn("Conditional decision: Story Protocol.", focus["lines"])
+            self.assertNotIn("Northwind", " ".join(focus["lines"]))
+            self.assertNotIn("Call them later", " ".join(focus["lines"]))
+
 
 class _Silent:
     def send(self, content: str) -> str:

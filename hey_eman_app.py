@@ -502,7 +502,7 @@ def _recent_runs(manager: Manager, limit: int = 100, days: int = 30) -> list[tup
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     cursor = manager._connection.execute(
         """
-        SELECT skill_name, task_id, executed_at, status
+        SELECT skill_name, task_id, executed_at, status, execution_time_ms, error_message
         FROM skill_runs
         WHERE executed_at >= ?
         ORDER BY executed_at DESC
@@ -511,6 +511,27 @@ def _recent_runs(manager: Manager, limit: int = 100, days: int = 30) -> list[tup
         (since, limit),
     )
     return cursor.fetchall()
+
+
+def _run_line(
+    skill_name: str,
+    task_id: str,
+    executed_at: str,
+    status: str | None,
+    duration_ms: int | None = None,
+    error_message: str | None = None,
+) -> str:
+    """One task-log line. Duration and error appear only when the run did not complete."""
+    line = f"`{skill_name}` for `{task_id}` at {executed_at}"
+    if not status or status == "completed":
+        return line
+    line = f"{line} ({status})"
+    if duration_ms is not None:
+        line = f"{line}, {int(duration_ms)} ms"
+    text = " ".join(str(error_message or "").split())
+    if text:
+        line = f"{line}. {text[:200]}"
+    return line
 
 
 def _parse_payload(raw) -> dict:
@@ -1316,11 +1337,10 @@ def _render_runs(manager: Manager) -> None:
     if not rows:
         st.caption("No skill runs in the last 30 days.")
         return
-    for skill_name, task_id, executed_at, status in rows:
-        line = f"`{skill_name}` for `{task_id}` at {executed_at}"
-        if status and status != "completed":
-            line = f"{line} ({status})"
-        st.markdown(line)
+    for skill_name, task_id, executed_at, status, duration_ms, error_message in rows:
+        st.markdown(
+            _run_line(skill_name, task_id, executed_at, status, duration_ms, error_message)
+        )
 
 
 # ---------------------------------------------------------------------------

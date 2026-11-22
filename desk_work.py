@@ -309,6 +309,12 @@ def morning_focus(db_path: str | Path, today: date | None = None) -> dict[str, A
         pause = False
     bill_line = _urgent_bill_line(actions, moment)
     lines = [bill_line, role_line] if bill_line else [role_line]
+    commitment_line = _due_commitment_line(db_path, moment)
+    if commitment_line:
+        lines.append(commitment_line)
+    conditional_line = _conditional_decision_line(db_path)
+    if conditional_line:
+        lines.append(conditional_line)
     return {
         "lines": lines,
         "pause_research": pause,
@@ -343,6 +349,65 @@ def _open_actions(db_path: str | Path) -> list[dict[str, Any]]:
         return list_open_priority_actions(min_priority=0, db_path=str(db_path))
     except Exception:
         return []
+
+
+def _due_commitment_line(db_path: str | Path, today: date) -> str:
+    """Name an open commitment that is due today or earlier. A blank date stays off this line."""
+    due: list[tuple[date, dict[str, Any]]] = []
+    for row in list_commitments(db_path):
+        parsed = _parse_date(str(row.get("due_on") or ""))
+        if parsed is not None and parsed <= today:
+            due.append((parsed, row))
+    if not due:
+        return ""
+    due.sort(key=lambda item: (item[0], str(item[1].get("title") or "")))
+    when, row = due[0]
+    title = row.get("title") or "Commitment"
+    word = "overdue" if when < today else "due"
+    line = f"Commitment {word}: {title}, due {when.isoformat()}."
+    extra = len(due) - 1
+    if extra == 1:
+        line = f"{line} 1 other commitment is also due."
+    elif extra > 1:
+        line = f"{line} {extra} other commitments are also due."
+    return line
+
+
+def _conditional_decision_line(db_path: str | Path) -> str:
+    """Name a subject whose latest stored decision is still conditional."""
+    resolved = resolve_db_path(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'strategic_decisions'"
+        ).fetchone()
+        if not exists:
+            return ""
+        rows = conn.execute(
+            """
+            SELECT subject, subject_key, decision
+            FROM strategic_decisions
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+    latest: dict[str, tuple[str, str]] = {}
+    for subject, key, decision in rows:
+        if key not in latest:
+            latest[str(key)] = (str(subject or ""), str(decision or ""))
+    names = sorted(subject for subject, decision in latest.values() if decision == "CONDITIONAL GO" and subject)
+    if not names:
+        return ""
+    line = f"Conditional decision: {names[0]}."
+    extra = len(names) - 1
+    if extra == 1:
+        line = f"{line} 1 other conditional decision."
+    elif extra > 1:
+        line = f"{line} {extra} other conditional decisions."
+    return line
 
 
 def _urgent_bill_line(actions: list[dict[str, Any]], today: date) -> str:
