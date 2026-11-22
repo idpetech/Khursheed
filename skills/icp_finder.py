@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from typing import Any
 from urllib.parse import urlparse
 
+from desk_model import call_model
 from skills.base import Skill
 from skills.tavily_client import tavily_search
 
@@ -116,16 +116,12 @@ def _prompt(snippets: list[dict[str, str]], criteria: dict[str, Any]) -> str:
 
 
 def _complete(prompt: str) -> str:
-    import openai
-
-    client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
+    reply = call_model(
+        [{"role": "user", "content": prompt}],
         max_tokens=1200,
         temperature=0,
     )
-    return response.choices[0].message.content or ""
+    return reply.text or ""
 
 
 def _parse_company_list(text: str) -> list[Any]:

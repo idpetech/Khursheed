@@ -11,6 +11,9 @@ from openai import OpenAI
 import priority_inbox
 from chat_memory import load_recent_turns
 from chat_memory import record_turn
+from desk_model import ModelSelectionError
+from desk_model import call_model
+from desk_model import provider_for
 from executive_summary import generate_executive_summary
 from manager import Manager
 from notifications import daily_brief_notifier
@@ -18,9 +21,10 @@ from principal_profile import principal_prompt_block
 
 
 class HeyEmanAgent:
-    def __init__(self, manager: Manager, model: str = "gpt-4o-mini", profile_path: str | None = None) -> None:
+    def __init__(self, manager: Manager, model: str | None = None, profile_path: str | None = None) -> None:
         self._manager = manager
         self._client = None
+        # None follows KHURSHEED_MODEL, which defaults to gpt-4o-mini.
         self._model = model
         self._profile_path = profile_path
         self._db_path = manager._db_path
@@ -41,6 +45,8 @@ class HeyEmanAgent:
                 "OpenAI connection error. Please check network access and try again. "
                 "You can still use local commands like 'check emails' or 'run tasks'."
             )
+        except ModelSelectionError as exc:
+            output_text = str(exc)
         record_turn(session_id, query, output_text, db_path=self._db_path)
         return output_text
 
@@ -48,6 +54,10 @@ class HeyEmanAgent:
         if self._client is None:
             self._client = OpenAI()
         return self._client
+
+    def _ask(self, messages: list[dict[str, Any]], **kwargs: Any):
+        client = self._openai() if provider_for(self._model) == "openai" else None
+        return call_model(messages, model=self._model, client=client, **kwargs)
 
     def _system_prompt(self) -> str:
         skill_names = ", ".join(self._manager.list_skill_names()) or "(none registered)"
@@ -143,18 +153,12 @@ class HeyEmanAgent:
         functions = [tool["function"] for tool in self._tool_definitions()]
         tool_used = False
         for _ in range(max_steps):
-            response = self._openai().chat.completions.create(
-                model=self._model,
-                messages=messages,
-                functions=functions,
-                function_call="auto",
-            )
-            message = response.choices[0].message
-            function_call = message.function_call
+            reply = self._ask(messages, functions=functions, function_call="auto")
+            function_call = reply.function_call
 
             if not function_call:
                 default = "Task completed." if tool_used else "No response available."
-                return message.content or default
+                return reply.text or default
 
             tool_used = True
             name = function_call.name
@@ -173,11 +177,8 @@ class HeyEmanAgent:
             })
 
         # Budget exhausted: ask for a final answer without more tool calls.
-        follow_up = self._openai().chat.completions.create(
-            model=self._model,
-            messages=messages,
-        )
-        return follow_up.choices[0].message.content or "Task completed."
+        follow_up = self._ask(messages)
+        return follow_up.text or "Task completed."
 
     def _dispatch_function(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
         if name == "run_skill":

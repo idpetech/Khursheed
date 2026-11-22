@@ -141,7 +141,15 @@ def add_commitment(
     return {"status": "ok", "message": "Commitment saved.", "commitment_id": commitment_id, "duplicate": False}
 
 
-def list_commitments(db_path: str | Path) -> list[dict[str, Any]]:
+def list_commitments(
+    db_path: str | Path,
+    statuses: tuple[str, ...] = ("open",),
+) -> list[dict[str, Any]]:
+    """Commitments in these statuses, oldest first. The default is open."""
+    allowed = ("open", "done", "blocked", "cancelled")
+    chosen = tuple(status for status in statuses if status in allowed)
+    if not chosen:
+        return []
     resolved = ensure_desk_work(db_path)
     conn = sqlite3.connect(resolved, timeout=30.0)
     conn.row_factory = sqlite3.Row
@@ -150,9 +158,10 @@ def list_commitments(db_path: str | Path) -> list[dict[str, Any]]:
             """
             SELECT commitment_id, title, due_on, status, created_at
             FROM commitments
-            WHERE status = 'open'
+            WHERE status IN (?, ?, ?, ?)
             ORDER BY created_at ASC
-            """
+            """,
+            (chosen + ("", "", "", ""))[:4],
         ).fetchall()
     finally:
         conn.close()
@@ -160,25 +169,62 @@ def list_commitments(db_path: str | Path) -> list[dict[str, Any]]:
 
 
 def complete_commitment(db_path: str | Path, commitment_id: str) -> dict[str, Any]:
+    return _move_commitment(db_path, commitment_id, "done")
+
+
+def block_commitment(db_path: str | Path, commitment_id: str) -> dict[str, Any]:
+    return _move_commitment(db_path, commitment_id, "blocked")
+
+
+def cancel_commitment(db_path: str | Path, commitment_id: str) -> dict[str, Any]:
+    return _move_commitment(db_path, commitment_id, "cancelled")
+
+
+def _move_commitment(db_path: str | Path, commitment_id: str, new_status: str) -> dict[str, Any]:
+    """Move an open or blocked commitment to done, blocked, or cancelled.
+
+    Done and cancelled stay as they are. Waiting for approval is a pending
+    action, not one of these statuses.
+    """
+    messages = {
+        "done": "Marked done.",
+        "blocked": "Marked blocked.",
+        "cancelled": "Marked cancelled.",
+    }
+    if new_status not in messages:
+        return {"status": "error", "message": "Use done, blocked, or cancelled."}
     resolved = ensure_desk_work(db_path)
     now = datetime.now(UTC).isoformat()
+    current: str | None = None
     conn = sqlite3.connect(resolved, timeout=30.0)
     try:
         with conn:
             cursor = conn.execute(
                 """
                 UPDATE commitments
-                SET status = 'done', updated_at = ?
-                WHERE commitment_id = ? AND status = 'open'
+                SET status = ?, updated_at = ?
+                WHERE commitment_id = ? AND status IN ('open', 'blocked') AND status != ?
                 """,
-                (now, commitment_id),
+                (new_status, now, commitment_id, new_status),
             )
-            done = cursor.rowcount > 0
+            moved = cursor.rowcount > 0
+            if not moved:
+                row = conn.execute(
+                    "SELECT status FROM commitments WHERE commitment_id = ?",
+                    (commitment_id,),
+                ).fetchone()
+                current = None if row is None else str(row[0])
     finally:
         conn.close()
-    if not done:
+    if moved:
+        return {"status": "ok", "message": messages[new_status]}
+    if current == "done":
         return {"status": "error", "message": "That commitment is already done."}
-    return {"status": "ok", "message": "Marked done."}
+    if current == "cancelled":
+        return {"status": "error", "message": "That commitment is already cancelled."}
+    if current == "blocked":
+        return {"status": "error", "message": "That commitment is already blocked."}
+    return {"status": "error", "message": "That commitment is not on the list."}
 
 
 def is_single_role(title: str, url: str) -> bool:
@@ -312,6 +358,9 @@ def morning_focus(db_path: str | Path, today: date | None = None) -> dict[str, A
     commitment_line = _due_commitment_line(db_path, moment)
     if commitment_line:
         lines.append(commitment_line)
+    blocked_line = _blocked_commitment_line(db_path, moment)
+    if blocked_line:
+        lines.append(blocked_line)
     conditional_line = _conditional_decision_line(db_path)
     if conditional_line:
         lines.append(conditional_line)
@@ -353,8 +402,17 @@ def _open_actions(db_path: str | Path) -> list[dict[str, Any]]:
 
 def _due_commitment_line(db_path: str | Path, today: date) -> str:
     """Name an open commitment that is due today or earlier. A blank date stays off this line."""
+    return _commitment_due_line(list_commitments(db_path, ("open",)), today, blocked=False)
+
+
+def _blocked_commitment_line(db_path: str | Path, today: date) -> str:
+    """Name a blocked commitment that is due today or earlier. A blank date stays off this line."""
+    return _commitment_due_line(list_commitments(db_path, ("blocked",)), today, blocked=True)
+
+
+def _commitment_due_line(rows: list[dict[str, Any]], today: date, blocked: bool) -> str:
     due: list[tuple[date, dict[str, Any]]] = []
-    for row in list_commitments(db_path):
+    for row in rows:
         parsed = _parse_date(str(row.get("due_on") or ""))
         if parsed is not None and parsed <= today:
             due.append((parsed, row))
@@ -364,12 +422,19 @@ def _due_commitment_line(db_path: str | Path, today: date) -> str:
     when, row = due[0]
     title = row.get("title") or "Commitment"
     word = "overdue" if when < today else "due"
-    line = f"Commitment {word}: {title}, due {when.isoformat()}."
+    if blocked:
+        line = f"Blocked commitment {word}: {title}, due {when.isoformat()}."
+    else:
+        line = f"Commitment {word}: {title}, due {when.isoformat()}."
     extra = len(due) - 1
     if extra == 1:
-        line = f"{line} 1 other commitment is also due."
-    elif extra > 1:
-        line = f"{line} {extra} other commitments are also due."
+        if blocked:
+            return f"{line} 1 other blocked commitment is also due."
+        return f"{line} 1 other commitment is also due."
+    if extra > 1:
+        if blocked:
+            return f"{line} {extra} other blocked commitments are also due."
+        return f"{line} {extra} other commitments are also due."
     return line
 
 

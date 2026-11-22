@@ -32,6 +32,8 @@ from desk_settings import prepare_desk_tasks
 from desk_settings import remove_icp_company
 from desk_settings import set_setting
 from desk_work import add_commitment
+from desk_work import block_commitment
+from desk_work import cancel_commitment
 from desk_work import choose_role
 from desk_work import complete_commitment
 from desk_work import decide_skill_request
@@ -502,7 +504,8 @@ def _recent_runs(manager: Manager, limit: int = 100, days: int = 30) -> list[tup
     since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     cursor = manager._connection.execute(
         """
-        SELECT skill_name, task_id, executed_at, status, execution_time_ms, error_message
+        SELECT skill_name, task_id, executed_at, status, execution_time_ms, error_message,
+               model, prompt_tokens, completion_tokens
         FROM skill_runs
         WHERE executed_at >= ?
         ORDER BY executed_at DESC
@@ -520,18 +523,45 @@ def _run_line(
     status: str | None,
     duration_ms: int | None = None,
     error_message: str | None = None,
+    model: str | None = None,
+    prompt_tokens: int | None = None,
+    completion_tokens: int | None = None,
 ) -> str:
     """One task-log line. Duration and error appear only when the run did not complete."""
     line = f"`{skill_name}` for `{task_id}` at {executed_at}"
-    if not status or status == "completed":
-        return line
-    line = f"{line} ({status})"
-    if duration_ms is not None:
-        line = f"{line}, {int(duration_ms)} ms"
-    text = " ".join(str(error_message or "").split())
-    if text:
-        line = f"{line}. {text[:200]}"
+    if status and status != "completed":
+        line = f"{line} ({status})"
+        if duration_ms is not None:
+            line = f"{line}, {int(duration_ms)} ms"
+        text = " ".join(str(error_message or "").split())
+        if text:
+            line = f"{line}. {text[:200]}"
+    note = _usage_note(model, prompt_tokens, completion_tokens)
+    if note:
+        line = f"{line} — {note}"
     return line
+
+
+def _usage_note(
+    model: str | None,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+) -> str:
+    """Model and token counts for a task-log line. Empty when the run recorded none."""
+    parts: list[str] = []
+    if isinstance(model, str) and model.strip():
+        parts.append(model.strip())
+    if prompt_tokens is not None:
+        parts.append(_token_count(prompt_tokens, "prompt token"))
+    if completion_tokens is not None:
+        parts.append(_token_count(completion_tokens, "completion token"))
+    return ", ".join(parts)
+
+
+def _token_count(count: int, singular: str) -> str:
+    number = int(count)
+    word = singular if number == 1 else f"{singular}s"
+    return f"{number} {word}"
 
 
 def _parse_payload(raw) -> dict:
@@ -644,12 +674,22 @@ def _render_commitments(db_path: str, commitments: list[dict]) -> None:
             st.session_state.last_ack = result.get("message") or "Saved."
             st.rerun()
     for item in commitments:
-        left, right = st.columns([5, 1])
         due = f" · due {item['due_on']}" if item.get("due_on") else ""
-        left.markdown(f"**{item['title']}**{due}")
-        if right.button("Done", key=f"commit-done-{item['commitment_id']}"):
-            result = complete_commitment(db_path, item["commitment_id"])
+        state = f" · {item['status']}" if item.get("status") in {"blocked", "cancelled"} else ""
+        st.markdown(f"**{item['title']}**{due}{state}")
+        done, blocked, cancelled = st.columns(3)
+        commitment_id = item["commitment_id"]
+        if done.button("Done", key=f"commit-done-{commitment_id}", use_container_width=True):
+            result = complete_commitment(db_path, commitment_id)
             st.session_state.last_ack = result.get("message") or "Done."
+            st.rerun()
+        if blocked.button("Blocked", key=f"commit-blocked-{commitment_id}", use_container_width=True):
+            result = block_commitment(db_path, commitment_id)
+            st.session_state.last_ack = result.get("message") or "Blocked."
+            st.rerun()
+        if cancelled.button("Cancelled", key=f"commit-cancelled-{commitment_id}", use_container_width=True):
+            result = cancel_commitment(db_path, commitment_id)
+            st.session_state.last_ack = result.get("message") or "Cancelled."
             st.rerun()
 
 
@@ -741,7 +781,7 @@ def _render_now(manager: Manager) -> None:
         st.markdown(f"**Other** · {len(other)}")
         _render_actions(manager, other, marked=marked)
 
-    commitments = list_commitments(db_path)
+    commitments = list_commitments(db_path, ("open", "blocked"))
     with st.expander(f"Commitments ({len(commitments)})", expanded=False):
         st.caption("Promises you made. These are separate from saved search pages.")
         _render_commitments(db_path, commitments)
@@ -1337,9 +1377,29 @@ def _render_runs(manager: Manager) -> None:
     if not rows:
         st.caption("No skill runs in the last 30 days.")
         return
-    for skill_name, task_id, executed_at, status, duration_ms, error_message in rows:
+    for (
+        skill_name,
+        task_id,
+        executed_at,
+        status,
+        duration_ms,
+        error_message,
+        model,
+        prompt_tokens,
+        completion_tokens,
+    ) in rows:
         st.markdown(
-            _run_line(skill_name, task_id, executed_at, status, duration_ms, error_message)
+            _run_line(
+                skill_name,
+                task_id,
+                executed_at,
+                status,
+                duration_ms,
+                error_message,
+                model,
+                prompt_tokens,
+                completion_tokens,
+            )
         )
 
 

@@ -18,6 +18,7 @@ CEO, company, desk, and mail:
 - `tests.test_bill_feedback`
 - `tests.test_sifter_skill`
 - `tests.test_sifter_financial`
+- `tests.test_enaam_eval`
 
 There is no checked-in job that runs the suite on every push. Run the touched modules before pushing. A Streamlit process that starts is not a test.
 
@@ -35,3 +36,5 @@ A change to routing, approval, sessions, or a skill that writes the database nee
 Cross-client retrieval tests wait until engagements exist. There is nothing to isolate yet.
 
 A strategic question writes `hey-eman-ceo` and does not call `HeyEmanAgent.respond`. An operational question writes `hey-eman`.
+
+`tests.test_enaam_eval` is the desk eval. A fake model covers the CEO session, the publish refusal, a directory page, invalid CEO JSON, and blocked or cancelled commitments. It does not call a paid API.

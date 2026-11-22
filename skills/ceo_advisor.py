@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from openai import OpenAI
-
+from desk_model import call_model
+from desk_model import model_ready
+from desk_model import refusal
 from desk_work import add_commitment
 from desk_work import list_commitments
 from desk_work import list_pursuits
@@ -170,11 +171,11 @@ class CeoAdvisorSkill(Skill):
         if research.get("required") and research.get("status") != "ok":
             result = _defer_for_research(question, research)
             return _finish(db_path, question, result, started)
-        if not os.getenv("OPENAI_API_KEY"):
+        if not model_ready():
             return {
                 "advisory": True,
                 "executed": False,
-                "error": "CEO Advisor needs the model. Set OPENAI_API_KEY.",
+                "error": _model_error(),
             }
         context = build_context(
             db_path,
@@ -598,12 +599,16 @@ def _result_from_model(question: str, parsed: dict[str, Any], research: dict[str
     return result
 
 
+def _model_error() -> str:
+    blocked = refusal()
+    if blocked:
+        return f"CEO Advisor needs the model. {blocked}"
+    return "CEO Advisor needs the model. Set OPENAI_API_KEY."
+
+
 def _complete(question: str, context: str) -> str:
-    response = OpenAI(api_key=os.environ["OPENAI_API_KEY"]).chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.2,
-        response_format={"type": "json_object"},
-        messages=[
+    reply = call_model(
+        [
             {"role": "system", "content": SYSTEM_PROMPT},
             {
                 "role": "user",
@@ -618,8 +623,10 @@ def _complete(question: str, context: str) -> str:
                 ),
             },
         ],
+        temperature=0.2,
+        response_format={"type": "json_object"},
     )
-    return (response.choices[0].message.content or "").strip()
+    return (reply.text or "").strip()
 
 
 def _earlier_advice(db_path: str) -> str:

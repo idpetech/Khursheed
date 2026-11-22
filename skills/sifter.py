@@ -13,8 +13,11 @@ from typing import Any, Dict, List, Optional
 import imaplib
 from datetime import datetime, timedelta, timezone
 
-from skills.base import Skill
+from desk_model import call_model
+from desk_model import model_ready
+from desk_model import refusal
 from runtime import resolve_db_path
+from skills.base import Skill
 
 logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -735,17 +738,15 @@ class SifterSkill(Skill):
         candidate_kind: str,
         biller_note: str = "",
     ) -> Dict[str, Any]:
-        """Stage 2: OpenAI extraction or fallback to keyword-only"""
+        """Stage 2: model extraction or fallback to keyword-only"""
+        blocked = refusal()
+        if blocked:
+            logger.warning("Model selection failed, falling back to keyword-only: %s", blocked)
+            return self._fallback_extraction(subject, sender, body, candidate_kind)
         try:
-            # Check if OpenAI is available
-            openai_key = os.getenv("OPENAI_API_KEY")
-            if not openai_key:
+            if not model_ready():
                 return self._fallback_extraction(subject, sender, body, candidate_kind)
 
-            # Try OpenAI extraction
-            import openai
-            client = openai.OpenAI(api_key=openai_key)
-            
             prompt = f"""
 Analyze this email and decide if the recipient must pay or will be auto-charged.
 
@@ -784,14 +785,12 @@ Do keep a personal invoice, a card or utility statement, a subscription receipt,
 or a renewal that charges this recipient.
 """
 
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
+            reply = call_model(
+                [{"role": "user", "content": prompt}],
                 max_tokens=200,
-                temperature=0.1
+                temperature=0.1,
             )
-            
-            result_text = response.choices[0].message.content or ""
+            result_text = reply.text or ""
             extraction = self._parse_model_json(result_text)
             
             # Validate required fields
@@ -801,7 +800,7 @@ or a renewal that charges this recipient.
             return extraction
             
         except Exception as e:
-            logger.warning(f"OpenAI extraction failed, falling back to keyword-only: {e}")
+            logger.warning("Model extraction failed, falling back to keyword-only: %s", e)
             return self._fallback_extraction(subject, sender, body, candidate_kind)
 
     def _fallback_extraction(self, subject: str, sender: str, body: str, candidate_kind: str) -> Dict[str, Any]:

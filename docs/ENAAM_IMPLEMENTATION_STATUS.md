@@ -11,6 +11,7 @@ Updated 22 Nov 2026. Code on the remote is `e09c346` on `cleanup/codebase-fixes`
 - Phase 4. The morning line adds a due or overdue commitment, and a subject whose latest CEO decision is still conditional, only when those rows exist. A task-log run that did not complete shows its duration and error. A completed run stays one line. No new table.
 - A company website is stored only when the address names that company. A list page shared by several names is left blank. Companies already queued keep the address they were saved with until they are skipped. Commit `e09c346`.
 - Phase 5. Backup and restore for `khursheed.db` are written in the operations note. The laptop file and Railway `/data/khursheed.db` stay two databases. On 22 Nov 2026 a temporary copy of the laptop file returned `integrity_check` `ok` and was deleted. The live file was not replaced. The Railway volume was not copied. No off-machine copy was kept.
+- Phases 6–10 of the deferred plan are local and not deployed. Code on the remote before this work was `e09c346`. The rollback commit for the recovery notes is `834caa3` and was not pushed.
 
 ## Left out on purpose
 
@@ -32,6 +33,8 @@ Phase 3, 22 Nov 2026: `unittest discover -s tests` ran 133 tests, OK, before and
 Phase 4, 22 Nov 2026: the same suite ran 133 tests before the morning-line change and 135 after, OK.
 
 Phase 5, 22 Nov 2026: `unittest discover -s tests` ran 136 tests, OK. The extra test is the directory page that must not be stored as a company website. The traceback lines in that run are the same provoked failures. Phase 5 changed notes only.
+
+Phases 6–10, 22 Nov 2026: `unittest discover -s tests` ran 171 tests, OK. `tests.test_enaam_eval` is the new module. The traceback lines are the same provoked failures. This work was not pushed.
 
 ## Known defects
 

@@ -8,10 +8,13 @@ CTO presence, and acquisition status using targeted searches.
 import csv
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List
+
+from desk_model import call_model
+from desk_model import model_ready
+from desk_model import refusal
 from skills.base import Skill
 from skills.tavily_client import tavily_search
 
@@ -84,19 +87,15 @@ def _states_acquired(company_name: str, content: str) -> bool:
 logger = logging.getLogger(__name__)
 
 
-def _request_ranking(client, prompt: str) -> dict | None:
+def _request_ranking(prompt: str) -> dict | None:
     """Ask for one JSON ranking. An empty body is a miss, not a score."""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
+    reply = call_model(
+        [{"role": "user", "content": prompt}],
         max_tokens=2000,
         temperature=0.1,
         response_format={"type": "json_object"},
     )
-    content = ""
-    if response.choices:
-        content = response.choices[0].message.content or ""
-    text = content.strip()
+    text = (reply.text or "").strip()
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
         text = re.sub(r"```$", "", text).strip()
@@ -431,11 +430,17 @@ class IcpProspectorSkill(Skill):
         purpose: str = "CTO opportunity",
     ) -> Dict[str, Any]:
         """Rank companies using LLM or fallback heuristic"""
-        openai_key = os.getenv("OPENAI_API_KEY")
         asked = (purpose or "").strip() or "CTO opportunity"
-
-        if openai_key:
-            return self._rank_with_llm(companies, top_n, openai_key, asked)
+        blocked = refusal()
+        if blocked:
+            return {
+                "error": blocked,
+                "top_companies": [],
+                "rejected": [],
+                "purpose": asked,
+            }
+        if model_ready():
+            return self._rank_with_llm(companies, top_n, asked)
         if not _is_cto_purpose(asked):
             return {
                 "error": f"Qualifying for {asked} needs the model.",
@@ -449,15 +454,10 @@ class IcpProspectorSkill(Skill):
         self,
         companies: List[Dict[str, Any]],
         top_n: int,
-        openai_key: str,
         purpose: str = "CTO opportunity",
     ) -> Dict[str, Any]:
-        """Rank companies using OpenAI LLM"""
+        """Rank companies with the desk model."""
         try:
-            import openai
-            
-            client = openai.OpenAI(api_key=openai_key)
-            
             # Prepare companies data for LLM
             companies_summary = []
             for i, company in enumerate(companies):
@@ -474,10 +474,10 @@ class IcpProspectorSkill(Skill):
             
             prompt = _ranking_prompt(companies_summary, top_n, purpose)
             
-            result = _request_ranking(client, prompt)
+            result = _request_ranking(prompt)
             if result is None:
                 logger.warning("LLM ranking returned nothing. Asking once more.")
-                result = _request_ranking(client, prompt)
+                result = _request_ranking(prompt)
             if result is None:
                 logger.warning("LLM ranking returned nothing after a retry.")
                 return {

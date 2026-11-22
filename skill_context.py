@@ -13,6 +13,8 @@ import os
 from typing import Any, Dict, TYPE_CHECKING
 
 from action_executor import unapproved_publish
+from desk_model import skill_run_usage
+from skill_declarations import declaration_refusal
 
 if TYPE_CHECKING:
     from manager import Manager
@@ -38,6 +40,7 @@ class SkillContext:
         self._depth = 0
         self._max_depth = 3
         self._llm_client = None
+        self._caller: str | None = None
         
         # Import priority_inbox module for access
         try:
@@ -100,11 +103,28 @@ class SkillContext:
                     error_message=str(refused.get("message") or ""),
                 )
                 return refused
-            result = skill.run(task)
-            
+            refused = declaration_refusal(
+                name,
+                payload,
+                called_by_skill=True,
+                caller=self._caller,
+            )
+            if refused is not None:
+                self._manager._record_run(
+                    task_id,
+                    name,
+                    refused,
+                    status="refused",
+                    error_message=str(refused.get("message") or ""),
+                )
+                return refused
+            child_context._caller = name
+            with skill_run_usage() as usage:
+                result = skill.run(task)
+
             # Record the run
-            self._manager._record_run(task_id, name, result)
-            
+            self._manager._record_run(task_id, name, result, usage=usage)
+
             return result
             
         except Exception as e:

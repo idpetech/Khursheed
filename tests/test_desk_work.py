@@ -12,6 +12,8 @@ from desk_settings import prepare_desk_tasks
 from desk_settings import set_setting
 from desk_work import add_commitment
 from desk_work import approved_skill_briefings
+from desk_work import block_commitment
+from desk_work import cancel_commitment
 from desk_work import choose_role
 from desk_work import complete_commitment
 from desk_work import decide_skill_request
@@ -75,6 +77,153 @@ class DeskWorkTests(unittest.TestCase):
             self.assertEqual([row["title"] for row in list_commitments(db_path)], ["Send the proposal"])
             self.assertEqual(complete_commitment(db_path, saved["commitment_id"])["status"], "ok")
             self.assertEqual(list_commitments(db_path), [])
+
+    def test_blocked_and_cancelled_stay_on_the_status_column(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            open_row = add_commitment(db_path, "Send the proposal", "2026-11-20")
+            held = add_commitment(db_path, "Call the bank", "2026-11-19")
+            dropped = add_commitment(db_path, "Skip the intro", "2026-11-18")
+            self.assertEqual(
+                sqlite3.connect(db_path).execute(
+                    "SELECT status FROM commitments WHERE commitment_id = ?",
+                    (open_row["commitment_id"],),
+                ).fetchone()[0],
+                "open",
+            )
+            columns = [
+                row[1]
+                for row in sqlite3.connect(db_path).execute("PRAGMA table_info(commitments)")
+            ]
+            self.assertEqual(
+                columns,
+                [
+                    "commitment_id",
+                    "title",
+                    "due_on",
+                    "status",
+                    "created_at",
+                    "updated_at",
+                    "decision_id",
+                ],
+            )
+            with sqlite3.connect(db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO commitments (
+                        commitment_id, title, due_on, status, created_at, updated_at, decision_id
+                    ) VALUES ('old-done', 'Old promise', '2026-11-01', 'done', 't', 't', '')
+                    """
+                )
+            self.assertEqual(block_commitment(db_path, held["commitment_id"])["message"], "Marked blocked.")
+            self.assertEqual(cancel_commitment(db_path, dropped["commitment_id"])["message"], "Marked cancelled.")
+            self.assertEqual([row["title"] for row in list_commitments(db_path)], ["Send the proposal"])
+            self.assertEqual(
+                [(row["title"], row["status"]) for row in list_commitments(db_path, ("open", "blocked"))],
+                [("Send the proposal", "open"), ("Call the bank", "blocked")],
+            )
+            self.assertEqual(
+                sqlite3.connect(db_path).execute(
+                    "SELECT status FROM commitments WHERE commitment_id = 'old-done'"
+                ).fetchone()[0],
+                "done",
+            )
+            self.assertEqual(
+                block_commitment(db_path, "missing")["message"],
+                "That commitment is not on the list.",
+            )
+            self.assertEqual(
+                block_commitment(db_path, "old-done")["message"],
+                "That commitment is already done.",
+            )
+            self.assertEqual(complete_commitment(db_path, held["commitment_id"])["message"], "Marked done.")
+            self.assertEqual(
+                cancel_commitment(db_path, dropped["commitment_id"])["message"],
+                "That commitment is already cancelled.",
+            )
+            self.assertEqual(
+                [(row["title"], row["status"]) for row in list_commitments(db_path, ("open", "blocked"))],
+                [("Send the proposal", "open")],
+            )
+            stored = {
+                row[0]: row[1]
+                for row in sqlite3.connect(db_path).execute("SELECT title, status FROM commitments")
+            }
+            self.assertEqual(
+                stored,
+                {
+                    "Send the proposal": "open",
+                    "Call the bank": "done",
+                    "Skip the intro": "cancelled",
+                    "Old promise": "done",
+                },
+            )
+
+    def test_now_marks_a_commitment_blocked_or_cancelled(self):
+        from streamlit.testing.v1 import AppTest
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            root = str(Path(__file__).resolve().parents[1])
+            first = add_commitment(db_path, "Send the proposal", "2026-11-19")
+            second = add_commitment(db_path, "Call the bank", "2026-11-18")
+            script = f"""
+import sys
+sys.path.insert(0, {root!r})
+from desk_work import list_commitments
+from hey_eman_app import _render_commitments
+
+_render_commitments({db_path!r}, list_commitments({db_path!r}, ("open", "blocked")))
+"""
+            app = AppTest.from_string(script, default_timeout=20)
+            app.run()
+            self.assertEqual(app.exception, [])
+            labels = [button.label for button in app.button]
+            self.assertIn("Done", labels)
+            self.assertIn("Blocked", labels)
+            self.assertIn("Cancelled", labels)
+            app.button(key=f"commit-blocked-{first['commitment_id']}").click().run()
+            app.run()
+            self.assertEqual(app.exception, [])
+            text = "\n".join(item.value for item in app.markdown)
+            self.assertIn("Send the proposal", text)
+            self.assertIn("· blocked", text)
+            self.assertEqual(
+                sqlite3.connect(db_path).execute(
+                    "SELECT status FROM commitments WHERE commitment_id = ?",
+                    (first["commitment_id"],),
+                ).fetchone()[0],
+                "blocked",
+            )
+            app.button(key=f"commit-cancelled-{second['commitment_id']}").click().run()
+            app.run()
+            self.assertEqual(app.exception, [])
+            text = "\n".join(item.value for item in app.markdown)
+            self.assertNotIn("Call the bank", text)
+            self.assertIn("· blocked", text)
+            self.assertEqual(
+                [button.label for button in app.button if button.label in {"Done", "Blocked", "Cancelled"}],
+                ["Done", "Blocked", "Cancelled"],
+            )
+            self.assertEqual(
+                sqlite3.connect(db_path).execute(
+                    "SELECT status FROM commitments WHERE commitment_id = ?",
+                    (second["commitment_id"],),
+                ).fetchone()[0],
+                "cancelled",
+            )
+            app.button(key=f"commit-done-{first['commitment_id']}").click().run()
+            app.run()
+            self.assertEqual(app.exception, [])
+            text = "\n".join(item.value for item in app.markdown)
+            self.assertNotIn("Send the proposal", text)
+            self.assertEqual(
+                sqlite3.connect(db_path).execute(
+                    "SELECT status FROM commitments WHERE commitment_id = ?",
+                    (first["commitment_id"],),
+                ).fetchone()[0],
+                "done",
+            )
 
     def test_skill_request_shows_workflow_and_briefing_before_it_is_approved(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -373,6 +522,53 @@ _render_pursuits(manager, list_pursuits(db))
             self.assertIn("Conditional decision: Story Protocol.", focus["lines"])
             self.assertNotIn("Northwind", " ".join(focus["lines"]))
             self.assertNotIn("Call them later", " ".join(focus["lines"]))
+
+    def test_a_blocked_due_commitment_is_named_on_the_morning_line(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            bank = add_commitment(db_path, "Call the bank", "2026-11-19")
+            later = add_commitment(db_path, "File the form", "2026-11-25")
+            blank = add_commitment(db_path, "Think about it", "")
+            self.assertEqual(block_commitment(db_path, bank["commitment_id"])["status"], "ok")
+            self.assertEqual(block_commitment(db_path, later["commitment_id"])["status"], "ok")
+            self.assertEqual(block_commitment(db_path, blank["commitment_id"])["status"], "ok")
+            alone = morning_focus(db_path, TODAY)
+            self.assertEqual(
+                alone["lines"],
+                [
+                    "No kept role yet.",
+                    "Blocked commitment due: Call the bank, due 2026-11-19.",
+                ],
+            )
+            send = add_commitment(db_path, "Send the note", "2026-11-18")
+            memo = add_commitment(db_path, "Write the memo", "2026-11-19")
+            chase = add_commitment(db_path, "Chase the invoice", "2026-11-18")
+            self.assertEqual(block_commitment(db_path, chase["commitment_id"])["status"], "ok")
+            both = morning_focus(db_path, TODAY)
+            self.assertEqual(
+                both["lines"],
+                [
+                    "No kept role yet.",
+                    "Commitment overdue: Send the note, due 2026-11-18. 1 other commitment is also due.",
+                    "Blocked commitment overdue: Chase the invoice, due 2026-11-18. "
+                    "1 other blocked commitment is also due.",
+                ],
+            )
+            self.assertNotIn("File the form", " ".join(both["lines"]))
+            self.assertNotIn("Think about it", " ".join(both["lines"]))
+            self.assertEqual(cancel_commitment(db_path, bank["commitment_id"])["status"], "ok")
+            self.assertEqual(cancel_commitment(db_path, chase["commitment_id"])["status"], "ok")
+            cleared = morning_focus(db_path, TODAY)
+            self.assertEqual(
+                cleared["lines"],
+                [
+                    "No kept role yet.",
+                    "Commitment overdue: Send the note, due 2026-11-18. 1 other commitment is also due.",
+                ],
+            )
+            self.assertEqual(complete_commitment(db_path, send["commitment_id"])["status"], "ok")
+            self.assertEqual(complete_commitment(db_path, memo["commitment_id"])["status"], "ok")
+            self.assertEqual(morning_focus(db_path, TODAY)["lines"], ["No kept role yet."])
 
 
 class _Silent:

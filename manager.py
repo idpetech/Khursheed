@@ -7,9 +7,12 @@ from typing import Any, Dict, Iterable, List
 
 from action_executor import unapproved_publish
 from database_migrations import DatabaseMigrations
+from desk_model import SkillRunUsage
+from desk_model import skill_run_usage
 from runtime import resolve_db_path
 from skills.base import Skill
 from skill_context import SkillContext
+from skill_declarations import declaration_refusal
 from mcp_registry import MCPRegistry
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -88,10 +91,14 @@ class Manager:
                             status TEXT NOT NULL DEFAULT 'completed',
                             error_message TEXT,
                             execution_time_ms INTEGER,
-                            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                            model TEXT,
+                            prompt_tokens INTEGER,
+                            completion_tokens INTEGER
                         )
                         """
                     )
+                    self._ensure_skill_run_usage_columns(connection)
                 self._initialized = True
             except sqlite3.Error as e:
                 raise RuntimeError(f"Failed to initialize Khursheed database: {e}") from e
@@ -127,8 +134,29 @@ class Manager:
                 error_message=str(refused.get("message") or ""),
             )
             return refused
-        result = skill.run(task)
-        self._record_run(task_id, skill_name, result)
+        caller = self._skill_context._caller
+        refused = declaration_refusal(
+            skill_name,
+            payload,
+            called_by_skill=caller is not None,
+            caller=caller,
+        )
+        if refused is not None:
+            self._record_run(
+                task_id,
+                skill_name,
+                refused,
+                status="refused",
+                error_message=str(refused.get("message") or ""),
+            )
+            return refused
+        self._skill_context._caller = skill_name
+        try:
+            with skill_run_usage() as usage:
+                result = skill.run(task)
+        finally:
+            self._skill_context._caller = caller
+        self._record_run(task_id, skill_name, result, usage=usage)
         return result
 
     def close(self) -> None:
@@ -187,6 +215,17 @@ class Manager:
             for row in cursor.fetchall()
         ]
 
+    def _ensure_skill_run_usage_columns(self, connection: sqlite3.Connection) -> None:
+        """Add usage columns when an existing skill_runs table does not have them."""
+        present = {row[1] for row in connection.execute("PRAGMA table_info(skill_runs)")}
+        for name, column_type in (
+            ("model", "TEXT"),
+            ("prompt_tokens", "INTEGER"),
+            ("completion_tokens", "INTEGER"),
+        ):
+            if name not in present:
+                connection.execute(f"ALTER TABLE skill_runs ADD COLUMN {name} {column_type}")
+
     def _record_run(
         self,
         task_id: str,
@@ -194,18 +233,36 @@ class Manager:
         result: Dict[str, Any],
         status: str = "completed",
         error_message: str | None = None,
+        usage: SkillRunUsage | None = None,
     ) -> None:
         import uuid
         run_id = str(uuid.uuid4())
         executed_at = datetime.now(timezone.utc).isoformat()
         payload = json.dumps(result)
+        if usage is None:
+            model_name, prompt_tokens, completion_tokens = None, None, None
+        else:
+            model_name, prompt_tokens, completion_tokens = usage.recorded()
 
         with self._connection:
             self._connection.execute(
                 """
                 INSERT INTO skill_runs
-                (run_id, task_id, skill_name, executed_at, result_json, status, error_message, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (run_id, task_id, skill_name, executed_at, result_json, status, error_message, created_at,
+                 model, prompt_tokens, completion_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, task_id, skill_name, executed_at, payload, status, error_message, executed_at),
+                (
+                    run_id,
+                    task_id,
+                    skill_name,
+                    executed_at,
+                    payload,
+                    status,
+                    error_message,
+                    executed_at,
+                    model_name,
+                    prompt_tokens,
+                    completion_tokens,
+                ),
             )

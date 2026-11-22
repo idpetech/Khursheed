@@ -13,6 +13,9 @@ import requests
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+from desk_model import call_model
+from desk_model import model_ready
+from desk_model import refusal
 from skills.base import Skill
 
 logger = logging.getLogger(__name__)
@@ -358,17 +361,19 @@ class BloggerSkill(Skill):
         self, ctx, theme: str, tone: str, length: str, factual_context: str,
         biases_data: Optional[Dict[str, Any]], cta: Optional[str]
     ) -> Optional[Dict[str, Any]]:
-        """Generate content using OpenAI LLM"""
+        """Generate content with the desk model."""
         try:
             if not ctx:
                 logger.error("No context available for LLM access")
                 return None
-                
-            llm = ctx.llm()
-            if not llm:
+            blocked = refusal()
+            if blocked:
+                logger.error(blocked)
+                return None
+            if not model_ready():
                 logger.error("LLM not available")
                 return None
-            
+
             # Partition biases by strength
             biases_by_strength = self._partition_biases(biases_data)
             
@@ -379,17 +384,15 @@ class BloggerSkill(Skill):
             user_prompt = self._build_user_prompt(theme, factual_context, cta)
             
             # Generate content
-            response = llm.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
+            reply = call_model(
+                [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "user", "content": user_prompt},
                 ],
                 max_tokens=2000,
-                temperature=0.7
+                temperature=0.7,
             )
-            
-            content = response.choices[0].message.content.strip()
+            content = (reply.text or "").strip()
             
             # Parse JSON response
             try:
