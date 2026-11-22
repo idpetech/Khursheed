@@ -1,5 +1,13 @@
 # Enaam current state
 
+This phase is closed. The next phase has not started. Remote is `c40b8fd` on `cleanup/codebase-fixes` (`c40b8fd4e57058ea8a58871c90e781ecb62ae887`, "Judge brief items from the stored message, then from the business context."). `git log -1` and `git status -sb` showed HEAD and `origin/cleanup/codebase-fixes` at that commit.
+
+The daily brief classifies mail from the stored sender, subject, and snippet. A sale or discount is promotional even with a deadline. Account harm is a priority alert and stays unverified. A request counts only with a deadline. Statement, credits, documents, important, and available do not qualify alone. The biller list, profile, and commitments only order or filter. They do not change that class. Recommendations are at most three. A discovery is not a commitment until the owner approves. New company notes can include a recipient found on a public page. Saved notes were not rewritten. Approve still does not send.
+
+Not in this phase: no model classifier, no new table, no client store, no Railway database copy. The laptop process on 8510 was not restarted as part of this note.
+
+Tests at close: 206 passed before `c40b8fd`. That is the count reported for that commit. This note does not record a new run.
+
 The daily app is `hey_eman_app.py`. It is Streamlit, started from `.venv`, and `main` binds port 8510. One process opens one SQLite file, `khursheed.db` (`Manager` default; `KHURSHEED_DB_PATH` overrides it). `hey_eman_app.py` does not import the `enaam/` package. `enaam_ui.py`, `enaam_admin.py`, `enaam_skill_api.py`, and `enaam/mcp_server.py` are still in the tree. They are the older stack, not the daily app.
 
 ## What the desk is now
@@ -36,7 +44,7 @@ Separate CoS and CEO sessions. New Chief of Staff turns stay in `hey-eman`. New 
 
 Specialized agents. No new agent classes were added. The jobs are the skills named in `skills_bootstrap.py` and described in `docs/ENAAM_AGENT_CATALOG.md`.
 
-Model-provider abstraction. `desk_model.call_model` is one function in the working tree. `DEFAULT_MODEL` is `gpt-4o-mini`. `configured_model` reads `KHURSHEED_MODEL` and keeps `gpt-4o-mini` when that value is blank. `provider_for` returns `openai` for `gpt-4o-mini`. It returns `anthropic` only when the name is a Claude model and `ANTHROPIC_API_KEY` is set. Any other name raises `ModelSelectionError` before a client is built. `HeyEmanAgent` passes `model=None` so the same rule applies, and it returns that error as the reply. This file is not committed. The recovery note still says the directive's model gateway is not built.
+Model-provider abstraction. `desk_model.call_model` is one function in the working tree. `DEFAULT_MODEL` is `gpt-4o-mini`. `configured_model` reads `KHURSHEED_MODEL` and keeps `gpt-4o-mini` when that value is blank. `provider_for` returns `openai` for `gpt-4o-mini`. It returns `anthropic` only when the name is a Claude model and `ANTHROPIC_API_KEY` is set. Any other name raises `ModelSelectionError` before a client is built. `HeyEmanAgent` passes `model=None` so the same rule applies, and it returns that error as the reply. `desk_model.py` is on the remote at `c40b8fd`. The recovery note still says the directive's model gateway is not built. This phase adds no model classifier.
 
 Task state machine. Commitment status lives on the existing `commitments` table. Approval state lives on `pending_actions`. There is no second task table.
 
@@ -46,7 +54,7 @@ Approval center. There is no separate approval app. Now, Companies, Mail, and Co
 
 Token and cost tracking. `skill_runs` stores the model name and token counts for a skill run. The task log prints those counts. There is no price table and no cost ledger.
 
-Eval suite. `tests/test_enaam_eval.py` is the desk eval. Its five methods check that a strategic question writes `hey-eman-ceo` and does not call `HeyEmanAgent.respond`, that a model tool call cannot publish, that a directory page is not stored as a company website, that invalid CEO JSON is not stored, and that a commitment can move to `blocked` and `cancelled`. The fake model does not call a paid API. The file is untracked.
+Eval suite. `tests/test_enaam_eval.py` is the desk eval. Its five methods check that a strategic question writes `hey-eman-ceo` and does not call `HeyEmanAgent.respond`, that a model tool call cannot publish, that a directory page is not stored as a company website, that invalid CEO JSON is not stored, and that a commitment can move to `blocked` and `cancelled`. The fake model does not call a paid API. The file is on the remote at `c40b8fd`.
 
 IDPETECH client store. There is no client engagement table. `docs/ENAAM_TEST_STRATEGY.md` says cross-client retrieval waits until engagements exist. `docs/ENAAM_IMPLEMENTATION_STATUS.md` says clients are not partitioned.
 
@@ -56,18 +64,18 @@ Gaps, stated from the code and the status note: no client engagement table, no d
 
 ## What changed after the directive
 
-Already on `origin/cleanup/codebase-fixes` through `e09c346` (`e09c346ac368838c292139b6cb41e3be3497a38b`, "Do not store a list page as each company's website"), plus local commit `834caa3` (`834caa3c27e66d112a2e4c283e5917b2765df5b9`, "Record the recovery steps as the rollback point"). That local commit changes only `docs/ENAAM_FINAL_STATE_ASSESSMENT.md`, `docs/ENAAM_IMPLEMENTATION_STATUS.md`, and `docs/ENAAM_OPERATIONS_RUNBOOK.md`. It was not pushed. The branch `cleanup/codebase-fixes` is ahead of `origin/cleanup/codebase-fixes` by that one commit. Origin still points at `e09c346`.
+This phase is closed. The next phase has not started. Remote `cleanup/codebase-fixes` is `c40b8fd` (`c40b8fd4e57058ea8a58871c90e781ecb62ae887`, "Judge brief items from the stored message, then from the business context."). `git status -sb` shows the branch level with `origin/cleanup/codebase-fixes`.
 
-That pushed history, read from `git log`, is the JSON CEO decision and kept company notes (`23dd2c8`), the bills list kept in Config (`d14a3e0`), the CEO session split (`c000527`), the publish refusal (`350b6ab`), the morning line for a due commitment and a conditional decision (`fd95e1a`), and the rule that a list page is not stored as a company website (`e09c346`). `834caa3` records the recovery steps and does not change desk behavior.
+Pushed history through that commit includes the JSON CEO decision and kept company notes (`23dd2c8`), the bills list kept in Config (`d14a3e0`), the CEO session split (`c000527`), the publish refusal (`350b6ab`), the morning line for a due commitment and a conditional decision (`fd95e1a`), the rule that a list page is not stored as a company website (`e09c346`), the recovery steps (`834caa3`), model calls, skill limits, and commitment states (`974cdec`), icon labels (`c0daaba`), and the brief rules (`c40b8fd`). `4c5898d` hid a saved list page and `661f57a` reverted that commit. Saved notes were not rewritten.
 
-Local and uncommitted, on top of `834caa3`. `git status -sb` shows this work as modifications and untracked files, not as commits. `desk_model.py` (`call_model`) is untracked. `skill_declarations.py` is untracked. `manager.py` adds the `skill_runs` columns `model`, `prompt_tokens`, and `completion_tokens` and calls `declaration_refusal`. `desk_work.py` and `hey_eman_app.py` add blocked and cancelled commitments and the task-log usage line. `llm_agent.py`, `skill_context.py`, and the skill modules `blogger`, `ceo_advisor`, `icp_finder`, `icp_prospector`, and `sifter` call `call_model`. `tests/test_enaam_eval.py` and `tests/test_desk_model.py` are untracked. `tests/test_chief_of_staff_runtime.py` and `tests/test_desk_work.py` are modified. None of this was pushed.
+206 passed before `c40b8fd`. That is the count reported for the commit. This note does not record a new run.
 
 ## How to verify
 
-The command is `.venv/bin/python -m unittest discover -s tests -t .`. `docs/ENAAM_IMPLEMENTATION_STATUS.md` reports the last full run: Phases 6–10, 22 Nov 2026, `unittest discover -s tests` ran 171 tests, OK. That run was not pushed. This note does not re-run the suite.
+The command is `.venv/bin/python -m unittest discover -s tests -t .`. The count reported for `c40b8fd` is 206 passed, before that commit. This note does not re-run the suite.
 
-Streamlit does not reload. The process on 8510 serves the previous code until it is restarted, and a restart signs the owner out.
+Streamlit does not reload. The process on 8510 serves the code it was started with until it is restarted, and a restart signs the owner out. This note did not restart that process.
 
 ## Still out
 
-No client store. No price table. No new agent classes. This uncommitted work is not deployed. The bills list stays in Config under "Days of mail to scan".
+No model classifier. No new table. No client store. No price table. No new agent classes. No Railway database copy. The next phase has not started. The bills list stays in Config under "Days of mail to scan". Approve still does not send.

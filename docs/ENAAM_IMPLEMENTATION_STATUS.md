@@ -1,6 +1,14 @@
 # Enaam implementation status
 
-Updated 22 Nov 2026. Code on the remote is `e09c346` on `cleanup/codebase-fixes`. Phase 5 is the recovery steps in `ENAAM_OPERATIONS_RUNBOOK.md` and this note. It does not deploy.
+Updated 22 Nov 2026. This phase is closed. The next phase has not started. Remote is `c40b8fd` on `cleanup/codebase-fixes` (`c40b8fd4e57058ea8a58871c90e781ecb62ae887`, "Judge brief items from the stored message, then from the business context."). `git log -1` and `git status -sb` showed HEAD and `origin/cleanup/codebase-fixes` at that commit.
+
+The daily brief classifies mail from the stored sender, subject, and snippet. A sale or discount is promotional even with a deadline. Account harm is a priority alert and stays unverified. A request counts only with a deadline. Statement, credits, documents, important, and available do not qualify alone. The biller list, profile, and commitments only order or filter. They do not change that class. Recommendations are at most three. A discovery is not a commitment until the owner approves. New company notes can include a recipient found on a public page. Saved notes were not rewritten. Approve still does not send.
+
+Not in this phase: no model classifier, no new table, no client store, no Railway database copy. The laptop process on 8510 was not restarted as part of this note.
+
+Tests at close: 206 passed before `c40b8fd`. That is the count reported for that commit. This note does not record a new run.
+
+Earlier notes below record Phases 0–5 and the recovery steps. Phase 5 is the recovery steps in `ENAAM_OPERATIONS_RUNBOOK.md`. It does not deploy.
 
 ## Completed
 
@@ -11,7 +19,7 @@ Updated 22 Nov 2026. Code on the remote is `e09c346` on `cleanup/codebase-fixes`
 - Phase 4. The morning line adds a due or overdue commitment, and a subject whose latest CEO decision is still conditional, only when those rows exist. A task-log run that did not complete shows its duration and error. A completed run stays one line. No new table.
 - A company website is stored only when the address names that company. A list page shared by several names is left blank. Companies already queued keep the address they were saved with until they are skipped. Commit `e09c346`.
 - Phase 5. Backup and restore for `khursheed.db` are written in the operations note. The laptop file and Railway `/data/khursheed.db` stay two databases. On 22 Nov 2026 a temporary copy of the laptop file returned `integrity_check` `ok` and was deleted. The live file was not replaced. The Railway volume was not copied. No off-machine copy was kept.
-- Phases 6–10 of the deferred plan are local and not deployed. Code on the remote before this work was `e09c346`. The rollback commit for the recovery notes is `834caa3` and was not pushed.
+- Phases 6–10 are on the remote in `974cdec` ("Keep model calls, skill limits, and commitment states on the desk that exists."), an ancestor of `c40b8fd`. The recovery notes are `834caa3`, also on that remote. `4c5898d` hid a saved list page; `661f57a` reverted it. Saved notes were not rewritten.
 
 ## Left out on purpose
 
@@ -19,6 +27,7 @@ Updated 22 Nov 2026. Code on the remote is `e09c346` on `cleanup/codebase-fixes`
 - No central tool-permission registry. The publish refusal is a check in `run_skill`, not a framework.
 - Historical CEO rows already in `hey-eman` are not moved.
 - Phase 5 does not deploy and does not replace either database.
+- This phase adds no model classifier, no new table, no client store, and no Railway database copy.
 
 ## Tests executed
 
@@ -34,7 +43,9 @@ Phase 4, 22 Nov 2026: the same suite ran 133 tests before the morning-line chang
 
 Phase 5, 22 Nov 2026: `unittest discover -s tests` ran 136 tests, OK. The extra test is the directory page that must not be stored as a company website. The traceback lines in that run are the same provoked failures. Phase 5 changed notes only.
 
-Phases 6–10, 22 Nov 2026: `unittest discover -s tests` ran 171 tests, OK. `tests.test_enaam_eval` is the new module. The traceback lines are the same provoked failures. This work was not pushed.
+Phases 6–10, 22 Nov 2026: `unittest discover -s tests` ran 171 tests, OK, as reported before that work was pushed in `974cdec`. `tests.test_enaam_eval` is the new module. The traceback lines are the same provoked failures.
+
+Close, commit `c40b8fd`: 206 passed before that commit. That figure is the count reported for the commit. This note does not record a new run of the suite.
 
 ## Known defects
 
@@ -49,7 +60,7 @@ See `ENAAM_SECURITY_MODEL.md`. Permissions are code, not a registry. Clients are
 
 ## Deployment readiness
 
-The laptop process on port 8510 is the daily desk. Railway is a Dockerfile plus a volume at `/data`. Readiness means the volume has the database you intend, the environment variables are set, and a restore copy exists off that machine. A running page is not that check. The copy command was checked. The replacement was not performed, and no restore copy was kept.
+The laptop process on port 8510 is the daily desk. This note did not restart it. Railway is a Dockerfile plus a volume at `/data`. Readiness means the volume has the database you intend, the environment variables are set, and a restore copy exists off that machine. A running page is not that check. The copy command was checked. The replacement was not performed, and no restore copy was kept.
 
 ## Deviations from the directive
 
