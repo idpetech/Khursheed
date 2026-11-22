@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from skills.base import Skill
 from skills.tavily_client import tavily_search
@@ -104,6 +105,9 @@ def _prompt(snippets: list[dict[str, str]], criteria: dict[str, Any]) -> str:
         f"Funding: {', '.join(criteria['funding_stages']) or 'any'}.\n"
         f"Notes: {notes}\n"
         "Use only companies whose names appear in the results. Do not invent companies.\n"
+        "website is that company's own site. If a result is a list of many companies, "
+        "leave website empty. Do not copy the list page address onto each company.\n"
+        "why is one fact from the result. Do not claim they need a CTO unless the result says so.\n"
         "Return a JSON list, and nothing else. Each item has company_name, website, "
         "industry, employee_count, funding_stage, and why.\n"
         f"Return at most {criteria['top_n']} companies.\n\n"
@@ -156,17 +160,44 @@ def _offer(
             continue
         company = {
             "company_name": name,
-            "website": str(row.get("website") or "").strip(),
+            "website": _own_website(name, str(row.get("website") or "")),
             "industry": str(row.get("industry") or "").strip().lower(),
             "employee_count": _employee_count(row.get("employee_count")),
             "funding_stage": str(row.get("funding_stage") or "").strip().lower(),
             "why": str(row.get("why") or "").strip(),
         }
-        _queue(db_path, company)
         offered.append(company)
         if len(offered) >= top_n:
             break
+    _drop_shared_sites(offered)
+    for company in offered:
+        _queue(db_path, company)
     return offered
+
+
+def _own_website(name: str, website: str) -> str:
+    """Keep a site only when its address names this company."""
+    url = website.strip()
+    if "://" not in url:
+        return ""
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    compact = re.sub(r"[^a-z0-9]", "", host)
+    tokens = [part for part in re.findall(r"[a-z0-9]+", name.lower()) if len(part) > 3]
+    if compact and any(token in compact for token in tokens):
+        return url
+    return ""
+
+
+def _drop_shared_sites(companies: list[dict[str, Any]]) -> None:
+    """A list page is not each company's site."""
+    counts: dict[str, int] = {}
+    for company in companies:
+        site = company.get("website") or ""
+        if site:
+            counts[site] = counts.get(site, 0) + 1
+    for company in companies:
+        if counts.get(company.get("website") or "", 0) > 1:
+            company["website"] = ""
 
 
 def _name_key(name: str) -> str:

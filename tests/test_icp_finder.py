@@ -30,8 +30,33 @@ class FinderTests(unittest.TestCase):
             ]
             offered = _offer(extracted, snippets, 5, db_path)
             self.assertEqual([row["company_name"] for row in offered], ["Northwind"])
+            self.assertEqual(offered[0]["website"], "https://northwind.example")
             offered_again = _offer(extracted, snippets, 5, db_path)
             self.assertEqual(offered_again, [])
+
+    def test_a_directory_page_is_not_each_companys_website(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            Manager(db_path=db_path)
+            page = "https://100xfounder.com/startups/early-stage-startups"
+            snippets = [
+                {
+                    "title": "Early stage startups",
+                    "url": page,
+                    "content": "Secoda, Capital, and Simplified are on this list.",
+                }
+            ]
+            extracted = [
+                {"company_name": "Secoda", "website": page, "industry": "saas", "funding_stage": "seed", "why": "Needs a fractional CTO."},
+                {"company_name": "Capital", "website": page, "industry": "fintech", "funding_stage": "seed", "why": "Needs a fractional CTO."},
+                {"company_name": "Simplified", "website": page, "industry": "saas", "funding_stage": "seed", "why": "Needs a fractional CTO."},
+            ]
+            offered = _offer(extracted, snippets, 5, db_path)
+            self.assertEqual(
+                [row["company_name"] for row in offered],
+                ["Secoda", "Capital", "Simplified"],
+            )
+            self.assertEqual([row["website"] for row in offered], ["", "", ""])
 
     def test_add_keeps_a_company_and_skip_does_not(self):
         with tempfile.TemporaryDirectory() as tmpdir:
