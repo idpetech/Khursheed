@@ -107,12 +107,51 @@ def _inject_base_css() -> None:
             min-height: 0;
             overflow: visible;
         }
-        /* Finger-friendly buttons with a subtle hover */
+        /* Finger-friendly buttons with a subtle hover.
+           Font weight stays on the button label. Icon spans keep their own face. */
         .stButton > button, .stFormSubmitButton > button {
             border-radius: 10px;
             padding: 0.55rem 1rem;
             font-weight: 600;
             transition: border-color .15s ease, color .15s ease, background-color .15s ease;
+        }
+        button [data-testid="stIconMaterial"],
+        summary [data-testid="stIconMaterial"],
+        [data-testid="stExpander"] [data-testid="stIconMaterial"],
+        [data-testid="stChatMessage"] [data-testid="stIconMaterial"],
+        [data-testid="stIconMaterial"],
+        .material-symbols-rounded {
+            font-family: "Material Symbols Rounded" !important;
+            font-weight: 400 !important;
+            font-style: normal !important;
+            font-feature-settings: "liga" !important;
+            -webkit-font-feature-settings: "liga" !important;
+            -moz-font-feature-settings: "liga" !important;
+            letter-spacing: normal !important;
+            text-transform: none !important;
+            white-space: nowrap !important;
+            word-wrap: normal !important;
+            direction: ltr;
+            line-height: 1 !important;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            overflow: hidden;
+            user-select: none;
+            -webkit-font-smoothing: antialiased;
+        }
+        .material-symbols-outlined {
+            font-family: "Material Symbols Outlined" !important;
+            font-weight: 400 !important;
+            font-style: normal !important;
+            font-feature-settings: "liga" !important;
+            -webkit-font-feature-settings: "liga" !important;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            overflow: hidden;
         }
         .enaam-chip { transition: border-color .15s ease, color .15s ease; }
         /* Tabs: roomier, horizontally scrollable; the pane below them scrolls */
@@ -1268,7 +1307,6 @@ def _render_blog_draft(action: dict) -> None:
     if tempering == "untempered":
         st.warning(
             "Generated without your InsightVault voice. Review tone before publishing.",
-            icon=":material/warning:",
         )
 
     body = payload.get("body_markdown") or payload.get("body") or ""
@@ -1490,9 +1528,9 @@ def _desk_turns(db_path: str, limit: int = 200) -> list[dict]:
 
 
 def _render_turn(turn: dict) -> None:
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="👤"):
         st.markdown(turn["user_content"])
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="✏"):
         if turn.get("desk_role") == "ceo":
             st.caption("CEO")
         st.markdown(turn["assistant_content"])
@@ -1598,9 +1636,9 @@ def _render_header(manager: Manager) -> None:
     _render_chips(manager)
 
     c1, c2 = st.columns(2)
-    if c1.button("Run morning brief", use_container_width=True, type="primary", icon=":material/bolt:"):
+    if c1.button("Run morning brief", use_container_width=True, type="primary"):
         _run_morning(manager)
-    if c2.button("Check mail now", use_container_width=True, icon=":material/mail:"):
+    if c2.button("Check mail now", use_container_width=True):
         with st.spinner("Checking mail. Headers first, then the bills and renewals."):
             _run_skill_now(
                 manager,
@@ -1709,7 +1747,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Enaam")
         st.caption("Chief of staff")
-        if st.button("Config", icon=":material/settings:", use_container_width=True):
+        if st.button("Config", use_container_width=True):
             st.session_state.config_open = not st.session_state.get("config_open", False)
         if st.session_state.get("config_open"):
             _render_research(str(manager._db_path))

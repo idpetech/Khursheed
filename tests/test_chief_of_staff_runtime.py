@@ -774,5 +774,59 @@ class ApprovalTests(unittest.TestCase):
             self.assertEqual(DECLARATIONS[name]["max_model_calls"], 0)
 
 
+class DeskLabelTests(unittest.TestCase):
+    def test_buttons_and_chat_skip_material_names(self):
+        from streamlit.testing.v1 import AppTest
+
+        source = Path(__file__).resolve().parent.parent.joinpath("hey_eman_app.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn(":material/", source)
+        self.assertIn('st.button("Config", use_container_width=True)', source)
+        families = [
+            line.strip()
+            for line in source.splitlines()
+            if "font-family" in line
+        ]
+        self.assertEqual(
+            families,
+            [
+                'font-family: "Material Symbols Rounded" !important;',
+                'font-family: "Material Symbols Outlined" !important;',
+            ],
+        )
+        self.assertIn('[data-testid="stIconMaterial"]', source)
+        self.assertNotIn("button, summary, *", source)
+
+        script = """
+import streamlit as st
+import hey_eman_app as desk
+
+desk._render_chips = lambda manager: None
+
+class _Manager:
+    _db_path = ":memory:"
+
+desk._render_header(_Manager())
+st.button("Config", use_container_width=True)
+desk._render_turn({
+    "user_content": "What's urgent?",
+    "assistant_content": "Here's what's urgent:",
+})
+"""
+        app = AppTest.from_string(script, default_timeout=30)
+        app.run()
+        self.assertEqual(len(app.exception), 0)
+        labels = [button.label for button in app.button]
+        self.assertIn("Run morning brief", labels)
+        self.assertIn("Check mail now", labels)
+        self.assertIn("Config", labels)
+        for button in app.button:
+            self.assertNotIn(":material/", button.label)
+            self.assertFalse(button.proto.icon)
+        avatars = [message.avatar for message in app.chat_message]
+        self.assertEqual(avatars, ["👤", "✏"])
+
+
 if __name__ == "__main__":
     unittest.main()
