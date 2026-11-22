@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from action_executor import approve_and_execute
+from action_executor import revise_action_payload
 from executive_summary import generate_executive_summary
 from llm_agent import HeyEmanAgent
 from manager import Manager
@@ -311,6 +312,52 @@ class ApprovalTests(unittest.TestCase):
                 post.assert_not_called()
             self.assertEqual(result["outcome"], "acknowledged")
             self.assertEqual(_pending_status(db_path, "bill-1"), "acknowledged")
+
+    def test_a_changed_payload_drops_the_approval(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = self._db(tmpdir)
+            _insert_pending(db_path, "bill-1", "new_bill", "Pay the host", priority=2)
+            approve_and_execute(db_path, "bill-1")
+            self.assertEqual(_pending_status(db_path, "bill-1"), "acknowledged")
+            result = revise_action_payload(db_path, "bill-1", {"amount": "40"})
+            self.assertTrue(result["invalidated"])
+            self.assertEqual(_pending_status(db_path, "bill-1"), "pending")
+            missing = revise_action_payload(db_path, "missing", {"amount": "1"})
+            self.assertEqual(missing["status"], "error")
+            _insert_pending(db_path, "bill-2", "new_bill", "Still open", priority=1)
+            edited = revise_action_payload(db_path, "bill-2", {"amount": "12"})
+            self.assertFalse(edited["invalidated"])
+            self.assertEqual(_pending_status(db_path, "bill-2"), "pending")
+
+    def test_the_model_and_another_skill_cannot_publish(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = self._db(tmpdir)
+            manager = Manager(db_path=db_path)
+
+            class Blogger(Skill):
+                name = "blogger"
+                called = False
+
+                def run(self, task):
+                    Blogger.called = True
+                    return {"status": "published"}
+
+            manager.register(Blogger())
+            with patch("skills.blogger.requests.post") as post:
+                direct = manager.run_skill("blogger", "chat-publish", {"mode": "publish"})
+                nested = manager._skill_context.run_skill("blogger", {"mode": "publish"})
+                draft = manager.run_skill("blogger", "chat-draft", {"mode": "draft", "theme": "cto"})
+                post.assert_not_called()
+            self.assertEqual(direct["status"], "refused")
+            self.assertFalse(direct["published"])
+            self.assertEqual(nested["status"], "refused")
+            self.assertTrue(Blogger.called)
+            self.assertEqual(draft["status"], "published")
+            row = manager._connection.execute(
+                "SELECT status FROM skill_runs WHERE task_id = ?",
+                ("chat-publish",),
+            ).fetchone()
+            self.assertEqual(row[0], "refused")
 
 
 if __name__ == "__main__":

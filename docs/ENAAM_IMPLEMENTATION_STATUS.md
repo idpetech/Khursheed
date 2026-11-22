@@ -13,7 +13,7 @@ Updated 22 Nov 2026. Remote is `d14a3e0` on `cleanup/codebase-fixes`. Phase 1 ad
 ## Remaining
 
 - Chief of Staff turns stay in `hey-eman`. New CEO assessments, decision lookups, and "track this" are stored in `hey-eman-ceo`. Ask Enaam shows both and captions a CEO reply. Older CEO rows already in `hey-eman` stay there. Phase 2.
-- No execution-layer permission check beyond the skill code. Phase 3.
+- `run_skill` refuses `blogger` with mode publish, including a call from another skill. Approve on Content remains the publish path. Changing an approved action's payload returns it to pending. Phase 3. No new table.
 - Morning line does not yet add due commitments and conditional CEO decisions. Task log does not yet surface a failed run's duration and error as a first-class line. Phase 4.
 - Backup and restore are written in the operations note and have not been drilled. Phase 5.
 - No engagement store, no cost ledger, no second model provider.
@@ -26,6 +26,8 @@ Updated 22 Nov 2026. Remote is `d14a3e0` on `cleanup/codebase-fixes`. Phase 1 ad
 117 tests. 115 passed. 2 errors, both in `tests/test_chief_of_staff_coverage.py`. Those tests patched `MarkdownFileNotifier` on `llm_agent` and `ask`. Those modules call `daily_brief_notifier` instead. The patches now target that function.
 
 Re-run of `tests.test_chief_of_staff_coverage`: 15 tests, OK. The earlier traceback lines about a failed skill named `boom` and unwritable open loops are the cases those tests provoke on purpose.
+
+Phase 3, 22 Nov 2026: `unittest discover -s tests` ran 133 tests, OK, before and after the publish gate. Coverage of the gate files: `manager.py` 100%, `action_executor.py` 96%, `llm_agent.py` 96%. `skill_context.py` is 58% because older unused helpers are untested. The new publish refusal in that file is covered.
 
 ## Known defects
 

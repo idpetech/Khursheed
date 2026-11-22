@@ -12,6 +12,8 @@ import logging
 import os
 from typing import Any, Dict, TYPE_CHECKING
 
+from action_executor import unapproved_publish
+
 if TYPE_CHECKING:
     from manager import Manager
     from mcp_registry import MCPRegistry, MCPHandle
@@ -88,6 +90,16 @@ class SkillContext:
                 raise KeyError(f"Skill '{name}' is not registered")
             
             logger.info(f"Executing skill '{name}' at depth {self._depth + 1}")
+            refused = unapproved_publish(name, payload)
+            if refused is not None:
+                self._manager._record_run(
+                    task_id,
+                    name,
+                    refused,
+                    status="refused",
+                    error_message=str(refused.get("message") or ""),
+                )
+                return refused
             result = skill.run(task)
             
             # Record the run

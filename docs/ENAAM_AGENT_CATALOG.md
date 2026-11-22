@@ -11,7 +11,7 @@ These are the registered skills. Each is one `run(task)` call. None of them is a
 | lead_scout | Broader lead search | Research. Paused while a kept role has no date. | Read |
 | cto_radar | Fractional CTO search | Same research pause. | Read |
 | calendar_prep | Next meeting from the calendar feed | Read. | Read |
-| blogger | LinkedIn draft | Publish only when the owner says publish and credentials exist. | External when publish is on |
+| blogger | LinkedIn draft | A draft stays pending. `run_skill` with mode publish is refused. Approve on Content is the publish path, and it still needs the publish flag and credentials. | External when publishing |
 | ceo_advisor | Strategic assessment | JSON decision, stored. No send, spend, or publish. | Reversible internal |
 
 Echo, timestamp, calculator, weather, file analyzer, and scout are registered leftovers. The morning run does not depend on them.

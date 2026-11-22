@@ -14,7 +14,7 @@ Read-only: mail headers and bodies into the local database, Tavily search, calen
 
 Reversible inside the desk: commitments, pursuits, skipped companies, declined notes, decision rows, biller rows.
 
-External, and still gated: sending a note (not implemented), publishing a LinkedIn post (disabled unless `KHURSHEED_BLOGGER_PUBLISH_ENABLED` and LinkedIn credentials are set).
+External, and still gated: sending a note (not implemented). Publishing a LinkedIn post is refused when a skill or the chat model calls `blogger` with mode publish. Approve on Content can publish, and only when `KHURSHEED_BLOGGER_PUBLISH_ENABLED` and LinkedIn credentials are set. A change to the approved payload clears that approval.
 
 There is no purchase or payment tool.
 

@@ -15,6 +15,74 @@ from skills.blogger import BloggerSkill
 
 
 LINKEDIN_DRAFT = "linkedin_post_draft"
+_APPROVED_STATUSES = ("acknowledged", "executed", "approved")
+
+
+def unapproved_publish(skill_name: str, payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Block a publish that did not come from an approved pending action."""
+    mode = ""
+    if isinstance(payload, dict):
+        mode = str(payload.get("mode") or "").strip().lower()
+    if skill_name == "blogger" and mode == "publish":
+        return {
+            "status": "refused",
+            "published": False,
+            "message": "Publishing waits for approval on Content. Nothing was posted.",
+        }
+    return None
+
+
+def revise_action_payload(
+    db_path: str | Path,
+    action_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Store a new payload. An approval of the previous payload no longer applies."""
+    resolved = resolve_db_path(db_path)
+    encoded = json.dumps(payload)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT status, payload_json
+            FROM pending_actions
+            WHERE action_id = ?
+            """,
+            (action_id,),
+        ).fetchone()
+        if row is None:
+            return {"status": "error", "message": "Action not found.", "action_id": action_id}
+        unchanged = (row["payload_json"] or "") == encoded
+        invalidated = row["status"] in _APPROVED_STATUSES and not unchanged
+        with conn:
+            if invalidated:
+                conn.execute(
+                    """
+                    UPDATE pending_actions
+                    SET payload_json = ?, status = 'pending',
+                        reviewed_by = NULL, reviewed_at = NULL, executed_at = NULL
+                    WHERE action_id = ?
+                    """,
+                    (encoded, action_id),
+                )
+            elif not unchanged:
+                conn.execute(
+                    """
+                    UPDATE pending_actions
+                    SET payload_json = ?
+                    WHERE action_id = ?
+                    """,
+                    (encoded, action_id),
+                )
+    finally:
+        conn.close()
+    return {
+        "status": "ok",
+        "action_id": action_id,
+        "invalidated": invalidated,
+        "pending": invalidated or row["status"] == "pending",
+    }
 
 
 def approve_and_execute(

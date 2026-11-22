@@ -71,7 +71,7 @@ class HeyEmanAgent:
             "The blogger payload REQUIRES a "
             "'theme' string; derive it from the user's request and always include it, "
             'e.g. payload {"mode": "draft", "theme": "fractional CTOs"}. '
-            "Use mode='publish' only when the user explicitly says publish. "
+            "Do not use mode='publish'. Publishing waits for approval on Content. "
             'For scout, pass payload {"query": "the search"}.\n'
             "When the user asks what is urgent, call list_priority_actions first. "
             "When the user wants a summary, call executive_summary. "

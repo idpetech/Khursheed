@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from action_executor import unapproved_publish
 from database_migrations import DatabaseMigrations
 from runtime import resolve_db_path
 from skills.base import Skill
@@ -116,6 +117,16 @@ class Manager:
             "ctx": self._skill_context,
             "db_path": str(self._db_path),
         }
+        refused = unapproved_publish(skill_name, payload)
+        if refused is not None:
+            self._record_run(
+                task_id,
+                skill_name,
+                refused,
+                status="refused",
+                error_message=str(refused.get("message") or ""),
+            )
+            return refused
         result = skill.run(task)
         self._record_run(task_id, skill_name, result)
         return result
