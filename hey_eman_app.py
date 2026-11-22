@@ -43,7 +43,6 @@ from skills.ceo_advisor import classify_request
 from skills.ceo_advisor import is_track_request
 from skills.ceo_advisor import question_from
 from skills.ceo_advisor import track_latest_advice
-from skills.icp_finder import _websites_to_keep
 from desk_work import list_commitments
 from desk_work import list_pursuits
 from desk_work import morning_focus
@@ -1104,36 +1103,6 @@ def _render_skill_request(db_path: str, action: dict) -> None:
         st.rerun()
 
 
-def _shown_candidate_website(manager: Manager, action: dict) -> str:
-    """The site to show for this card. A list page, or a shared address, stays blank."""
-    candidates = [
-        item
-        for item in _open_pending(manager)
-        if (item.get("action_type") or "") == "icp_candidate"
-    ]
-    action_id = action.get("action_id")
-    if not any(item.get("action_id") == action_id for item in candidates):
-        candidates.append(action)
-    companies: list[dict] = []
-    index = 0
-    for position, item in enumerate(candidates):
-        item_payload = _parse_payload(item.get("payload_json"))
-        if item.get("action_id") == action_id:
-            index = position
-        companies.append(
-            {
-                "company_name": str(
-                    item_payload.get("company_name") or item.get("title") or ""
-                ).strip(),
-                "website": str(item_payload.get("website") or "").strip(),
-            }
-        )
-    kept = _websites_to_keep(companies)
-    if not kept:
-        return ""
-    return kept[index]
-
-
 def _render_icp_candidate(manager: Manager, action: dict) -> None:
     """Let a suggested company be added, qualified, or skipped."""
     db_path = str(manager._db_path)
@@ -1152,10 +1121,10 @@ def _render_icp_candidate(manager: Manager, action: dict) -> None:
     )
     if details:
         st.caption(details)
-    company_name = str(payload.get("company_name") or action.get("title") or "").strip()
-    website = _shown_candidate_website(manager, action)
+    website = str(payload.get("website") or "").strip()
     if website:
         st.markdown(website)
+    company_name = str(payload.get("company_name") or action.get("title") or "").strip()
     existing = get_workflow(db_path, company_name)
     if existing and existing.get("step") not in {"qualify"}:
         st.caption(describe_workflow(existing))
