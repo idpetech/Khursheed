@@ -201,6 +201,71 @@ def decide_icp_draft(db_path: str | Path, action_id: str, approve: bool) -> dict
     return _view(saved)
 
 
+def refresh_icp_search(db_path: str | Path, manager: Any) -> dict[str, Any]:
+    """Look for new companies now. Names already offered are left off the list."""
+    from desk_settings import icp_payload
+
+    result = manager.run_skill("icp_finder", "icp-refresh", icp_payload(db_path))
+    found = [item for item in (result.get("candidates") or []) if isinstance(item, dict)]
+    if result.get("error") and not found:
+        return {"status": "error", "message": str(result["error"]), "found": 0}
+    if not found:
+        return {
+            "status": "ok",
+            "message": "No new companies. Names already offered stay off this list.",
+            "found": 0,
+        }
+    noun = "company" if len(found) == 1 else "companies"
+    return {"status": "ok", "message": f"Found {len(found)} new {noun}.", "found": len(found)}
+
+
+def list_company_notes(db_path: str | Path) -> list[dict[str, Any]]:
+    """Approved and declined notes, newest first. Pending notes stay in the waiting list."""
+    resolved = ensure_workflow(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT company_key, company_name, website, step, draft, updated_at
+            FROM workflow_runs
+            WHERE step IN ('approved', 'declined') AND draft != ''
+            ORDER BY updated_at DESC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in rows]
+
+
+def track_company_note(db_path: str | Path, company_name: str) -> dict[str, Any]:
+    """Save a follow-up for an approved note. Tracking does not send it."""
+    from desk_work import add_commitment
+    from desk_work import list_commitments
+
+    name = (company_name or "").strip()
+    row = get_workflow(db_path, name)
+    if row is None or row.get("step") != "approved":
+        return {"status": "error", "message": "That note is not approved.", "sent": False}
+    title = f"Follow up on the approved note for {name}"
+    if any(item.get("title") == title for item in list_commitments(db_path)):
+        return {
+            "status": "ok",
+            "message": f"The follow-up for {name} is already on Now. The note was not sent.",
+            "duplicate": True,
+            "sent": False,
+        }
+    saved = add_commitment(db_path, title)
+    if saved.get("status") != "ok":
+        return saved
+    return {
+        "status": "ok",
+        "message": f"The follow-up for {name} is on Now, under Commitments. The note was not sent.",
+        "sent": False,
+        "commitment_id": saved.get("commitment_id"),
+    }
+
+
 def resume_open_workflows(manager: Any) -> list[str]:
     """Finish a note that was already qualified. Do not start a new search."""
     resolved = ensure_workflow(manager._db_path)
@@ -394,7 +459,7 @@ def _view(row: dict[str, Any] | None) -> dict[str, Any]:
         purpose = _purpose(_findings(row))
         message = f"A note for {name} is in Companies. Qualified as {purpose}. It has not been sent."
     elif step == "approved":
-        message = f"Approved the note for {name}. It was not sent."
+        message = f"Approved the note for {name}. It was not sent. It stays on Companies under Kept notes."
     elif step == "declined":
         message = f"Left the note for {name}. Nothing was sent."
     elif step == "draft":

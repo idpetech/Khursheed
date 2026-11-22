@@ -29,17 +29,6 @@ from skills.tavily_client import tavily_search
 logger = logging.getLogger(__name__)
 
 
-DECISION_LABELS = (
-    "Strategic rationale:",
-    "Commercial rationale:",
-    "Evidence:",
-    "Unknowns:",
-    "Resource commitment:",
-    "Opportunity cost:",
-    "Next action:",
-    "Confidence:",
-)
-
 _OPERATIONAL_WORDS = ("inbox", "email", "e-mail", "mail", "calendar", "linkedin", "publish", "post a week")
 
 _INTERNAL_MARKERS = (
@@ -66,23 +55,9 @@ A CEO advisor behaves like this:
 - GO means there is evidence a buyer would pay IDPETECH, or a measurable result IDPETECH can already deliver.
 - ChatGPT and Claude are the buyer's first alternative for generic information, advice, research, writing, or recommendations. Name the accountability, judgment, or implementation IDPETECH adds, or say there is none.
 - The next action is one concrete step, or "Stop. Do not pursue this." It is not authorization to send, spend, or publish.
-- Strategic rationale says whether the subject is interesting and why. Commercial rationale says whether someone can make money, whether IDPETECH can, whether IDPETECH can deliver, and whether the time is worth it. A reply without Decision: GO, CONDITIONAL GO, DEFER, or NO-GO is invalid.
-
-End with these labels, each on its own line:
-
-Decision: GO or CONDITIONAL GO or DEFER or NO-GO
-Strategic rationale:
-Commercial rationale:
-Evidence:
-Unknowns:
-Assumptions:
-Conditions:
-Resource commitment:
-Opportunity cost:
-Next action:
-Confidence: High or Medium or Low, then why
-
-Before the decision, write a short assessment of this subject. No fixed menu of opportunities, risks, and options. No task list."""
+- Strategic rationale and commercial rationale are sentences that name the reason. A rationale that is only UNKNOWN, REPORTED, ASSUMED, or VERIFIED is invalid.
+- Return one JSON object and nothing else. The keys are assessment, decision, strategic_rationale, commercial_rationale, evidence, unknowns, assumptions, conditions, resource_commitment, opportunity_cost, next_action, and confidence.
+- decision is exactly GO, CONDITIONAL GO, DEFER, or NO-GO. confidence starts with High, Medium, or Low, then a short reason."""
 
 
 _LOOKUP_PATTERNS = (
@@ -208,17 +183,15 @@ class CeoAdvisorSkill(Skill):
             research,
         )
         try:
-            assessment = _complete(question, context)
-            repaired = _with_decision(assessment)
-            parsed = _parse_decision(repaired)
+            raw = _complete(question, context)
+            parsed = _parse_model_json(raw)
             if not parsed:
                 logger.warning("ceo_advisor structured output invalid; asking once more")
-                assessment = _complete(
-                    question + "\n\nRestate the same judgment and end with a Decision line.",
+                raw = _complete(
+                    question + "\n\nThe previous reply was not a valid JSON decision. Return only the JSON object.",
                     context,
                 )
-                repaired = _with_decision(assessment)
-                parsed = _parse_decision(repaired)
+                parsed = _parse_model_json(raw)
         except Exception as exc:
             logger.warning("ceo_advisor model failed: %s", exc)
             return {"advisory": True, "executed": False, "error": f"CEO Advisor could not complete: {exc}"}
@@ -227,11 +200,11 @@ class CeoAdvisorSkill(Skill):
                 "advisory": True,
                 "executed": False,
                 "error": "CEO Advisor did not reach a decision.",
-                "assessment": assessment,
+                "assessment": raw,
                 "researched": research.get("status") == "ok",
                 "research_note": research.get("note", ""),
             }
-        result = _result_from_parse(question, repaired, parsed, research)
+        result = _result_from_model(question, parsed, research)
         return _finish(db_path, question, result, started)
 
 
@@ -520,102 +493,116 @@ def _plain(text: str) -> str:
     return re.sub(r"\*+", "", text)
 
 
-def _line_value(plain: str, label: str) -> str:
-    match = re.search(rf"(?im)^{re.escape(label)}:\s*(.+)$", plain)
-    return match.group(1).strip() if match else ""
+def _text_field(value: object) -> str:
+    if isinstance(value, list):
+        return "; ".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "").strip()
 
 
-def _infer_decision(plain: str) -> str:
-    """Recover a decision when the model stated the judgment and omitted the Decision line."""
-    match = re.search(r"Decision:\s*(CONDITIONAL GO|NO-GO|DEFER|GO)\b", plain)
-    if match:
-        return match.group(1)
-    commercial = _line_value(plain, "Commercially real for IDPETECH").lower()
-    deliverable = _line_value(plain, "Deliverable by IDPETECH").lower()
-    if not commercial and not deliverable:
-        return ""
-    combined = f"{commercial} {deliverable}"
-    no_fit = (
-        commercial.startswith("no")
-        or deliverable.startswith("no")
-        or "cannot sell" in combined
-        or "does not align" in combined
-        or "no capability" in combined
-        or "not aligned" in combined
-    )
-    unknown = any(word in combined for word in ("unknown", "unclear", "not established", "not clear"))
-    if unknown and not no_fit:
-        return "DEFER"
-    if no_fit:
-        return "NO-GO"
-    return ""
+def _list_field(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
 
 
-def _with_decision(text: str) -> str:
-    """Add the required decision labels when the model already stated them in other words."""
-    plain = _plain(text).strip()
-    if _has_decision(plain):
-        return plain
-    decision = _infer_decision(plain)
-    if not decision:
-        return plain
-    strategic = (
-        _line_value(plain, "Strategic rationale")
-        or _line_value(plain, "Strategically interesting")
-        or "See the assessment."
-    )
-    commercial = (
-        _line_value(plain, "Commercial rationale")
-        or _line_value(plain, "Commercially real for IDPETECH")
-        or "See the assessment."
-    )
-    if decision == "DEFER":
-        plain = re.sub(
-            r"(?im)^Next action:\s*Stop\..*$",
-            "Next action: Name the IDPETECH capability this subject would pay for before any pursuit.",
-            plain,
-            count=1,
-        )
-    extra = [
-        f"Decision: {decision}",
-        f"Strategic rationale: {strategic}",
-        f"Commercial rationale: {commercial}",
-    ]
-    for label in (
-        "Evidence:",
-        "Unknowns:",
-        "Resource commitment:",
-        "Opportunity cost:",
-        "Next action:",
-        "Confidence:",
-    ):
-        if label.lower() not in plain.lower():
-            extra.append(f"{label} None stated.")
-    return plain + "\n" + "\n".join(extra)
-
-
-def _has_decision(text: str) -> bool:
-    plain = _plain(text)
-    if not re.search(r"Decision:\s*(CONDITIONAL GO|NO-GO|DEFER|GO)\b", plain):
+def _rationale_ok(text: str) -> bool:
+    """A rationale has to say the reason. A label grid is not a reason."""
+    body = text.strip()
+    if len(body) < 8:
         return False
-    return all(label in plain for label in DECISION_LABELS)
+    if body.lower() in {"unknown", "reported", "assumed", "verified", "none", "none stated."}:
+        return False
+    labels = re.findall(
+        r"(strategically interesting|commercially real|deliverable by idpetech|worth the resource commitment)"
+        r"\s*:\s*(unknown|reported|assumed|verified)\b",
+        body,
+        re.I,
+    )
+    return len(labels) < 2
 
 
-def _next_action(text: str) -> str:
-    match = re.search(r"Next action:\s*(.+)", _plain(text))
-    if not match:
-        match = re.search(r"Next step:\s*(.+)", text)
-    if not match:
-        return ""
-    line = match.group(1).strip().strip("-").strip()
-    line = re.sub(r"\*+", "", line).strip()
-    return line[:240]
+def _parse_model_json(text: str) -> dict[str, Any] | None:
+    """Read one JSON decision. Prose and a missing decision are rejected."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            data = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(data, dict):
+        return None
+    decision = re.sub(r"\s+", " ", str(data.get("decision") or "").strip().upper())
+    matched = ""
+    for name in ("CONDITIONAL GO", "NO-GO", "DEFER", "GO"):
+        if decision == name:
+            matched = name
+            break
+    if not matched:
+        return None
+    strategic = _text_field(data.get("strategic_rationale"))
+    commercial = _text_field(data.get("commercial_rationale"))
+    if not _rationale_ok(strategic) or not _rationale_ok(commercial):
+        return None
+    confidence_raw = _text_field(data.get("confidence")) or "Low"
+    return {
+        "assessment": _text_field(data.get("assessment")),
+        "decision": matched,
+        "strategic_rationale": strategic,
+        "commercial_rationale": commercial,
+        "evidence": _list_field(data.get("evidence")),
+        "unknowns": _list_field(data.get("unknowns")),
+        "assumptions": _list_field(data.get("assumptions")),
+        "conditions": _list_field(data.get("conditions")),
+        "resource_commitment": _text_field(data.get("resource_commitment")),
+        "opportunity_cost": _text_field(data.get("opportunity_cost")),
+        "next_action": _text_field(data.get("next_action"))[:240],
+        "confidence": confidence_raw,
+    }
+
+
+def _result_from_model(question: str, parsed: dict[str, Any], research: dict[str, Any]) -> dict[str, Any]:
+    sources = [item["url"] for item in research.get("snippets") or [] if item.get("url")]
+    action = str(parsed.get("next_action") or "")[:240]
+    result = {
+        "advisory": True,
+        "executed": False,
+        "question": question,
+        "subject": _subject(question),
+        "assessment": str(parsed.get("assessment") or ""),
+        "decision": parsed.get("decision") or "",
+        "strategic_rationale": parsed.get("strategic_rationale") or "",
+        "commercial_rationale": parsed.get("commercial_rationale") or "",
+        "evidence": parsed.get("evidence") or [],
+        "unknowns": parsed.get("unknowns") or [],
+        "assumptions": parsed.get("assumptions") or [],
+        "conditions": parsed.get("conditions") or [],
+        "resource_commitment": parsed.get("resource_commitment") or "",
+        "opportunity_cost": parsed.get("opportunity_cost") or "",
+        "next_step": action,
+        "next_action": action,
+        "confidence": parsed.get("confidence") or "Low",
+        "sources": sources,
+        "research_status": research.get("research_status") or "NOT_RUN",
+        "research_note": research.get("note", ""),
+        "researched": research.get("status") == "ok",
+    }
+    result["display"] = _display(result)
+    return result
 
 
 def _complete(question: str, context: str) -> str:
     response = OpenAI(api_key=os.environ["OPENAI_API_KEY"]).chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.2,
+        response_format={"type": "json_object"},
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {
@@ -627,7 +614,7 @@ def _complete(question: str, context: str) -> str:
                     f"{context}\n\n"
                     "If IDPETECH cannot sell, build, or be accountable for this subject with capabilities it already has, "
                     "the decision is NO-GO even when other people make money in that market. "
-                    "Do not turn the answer into a study or a campaign."
+                    "Do not turn the answer into a study or a campaign. Return only the JSON object."
                 ),
             },
         ],
@@ -680,21 +667,6 @@ def _latest_result(db_path: str) -> dict[str, Any] | None:
     return result if isinstance(result, dict) else None
 
 
-_FIELD_NAMES = (
-    "Decision",
-    "Strategic rationale",
-    "Commercial rationale",
-    "Evidence",
-    "Unknowns",
-    "Assumptions",
-    "Conditions",
-    "Resource commitment",
-    "Opportunity cost",
-    "Next action",
-    "Confidence",
-)
-
-
 def _subject(question: str) -> str:
     body = re.sub(r"^\W*\w+", "", (question or "").strip())
     names = re.findall(r"\b[A-Z][A-Za-z0-9]+(?:\s+[A-Z][A-Za-z0-9]+){0,3}", body)
@@ -717,76 +689,6 @@ def _source_class(subject: str, url: str) -> str:
     if len(token) > 4 and token in host:
         return "possible_primary"
     return "independent"
-
-
-def _parse_decision(text: str) -> dict[str, str] | None:
-    plain = _plain(text)
-    if not _has_decision(plain):
-        return None
-    found: dict[str, str] = {}
-    current = ""
-    bucket: list[str] = []
-    names = {name.lower(): name for name in _FIELD_NAMES}
-
-    def flush() -> None:
-        if current:
-            found[current] = " ".join(part.strip() for part in bucket if part.strip()).strip()
-
-    for line in plain.splitlines():
-        label = ""
-        rest = ""
-        lowered = line.strip().lower()
-        for key, name in names.items():
-            prefix = key + ":"
-            if lowered.startswith(prefix):
-                label = name
-                rest = line.split(":", 1)[1].strip()
-                break
-        if label:
-            flush()
-            current = label
-            bucket = [rest]
-        elif current:
-            bucket.append(line)
-    flush()
-    match = re.search(r"Decision:\s*(CONDITIONAL GO|NO-GO|DEFER|GO)\b", plain)
-    if not match:
-        return None
-    found["Decision"] = match.group(1)
-    return found
-
-
-def _result_from_parse(question: str, assessment: str, parsed: dict[str, str], research: dict[str, Any]) -> dict[str, Any]:
-    sources = [item["url"] for item in research.get("snippets") or [] if item.get("url")]
-    confidence = (parsed.get("Confidence") or "Low").split(",")[0].strip().split()[0].upper()
-    if confidence not in {"HIGH", "MEDIUM", "LOW"}:
-        confidence = "LOW"
-    result = {
-        "advisory": True,
-        "executed": False,
-        "question": question,
-        "subject": _subject(question),
-        "assessment": assessment,
-        "decision": parsed.get("Decision", ""),
-        "strategic_rationale": parsed.get("Strategic rationale", ""),
-        "commercial_rationale": parsed.get("Commercial rationale", ""),
-        "evidence": [parsed.get("Evidence", "")] if parsed.get("Evidence") else [],
-        "unknowns": [parsed.get("Unknowns", "")] if parsed.get("Unknowns") else [],
-        "assumptions": [parsed.get("Assumptions", "")] if parsed.get("Assumptions") else [],
-        "conditions": [parsed.get("Conditions", "")] if parsed.get("Conditions") else [],
-        "resource_commitment": parsed.get("Resource commitment", ""),
-        "opportunity_cost": parsed.get("Opportunity cost", ""),
-        "next_step": parsed.get("Next action", "")[:240],
-        "next_action": parsed.get("Next action", "")[:240],
-        "confidence": confidence,
-        "sources": sources,
-        "research_status": research.get("research_status") or "NOT_RUN",
-        "research_note": research.get("note", ""),
-        "researched": research.get("status") == "ok",
-    }
-    _clarify_result(result)
-    result["display"] = _display(result)
-    return result
 
 
 def _defer_for_research(question: str, research: dict[str, Any]) -> dict[str, Any]:
@@ -816,70 +718,6 @@ def _defer_for_research(question: str, research: dict[str, Any]) -> dict[str, An
     }
     result["display"] = _display(result)
     return result
-
-
-_TAG_LINE = re.compile(
-    r"(Strategically interesting|Commercially real for someone|Commercially real for IDPETECH|"
-    r"Deliverable by IDPETECH|Worth the resource commitment)\s*:\s*(UNKNOWN|REPORTED|ASSUMED|VERIFIED)\b",
-    re.I,
-)
-
-_TAG_SENTENCE = {
-    ("strategically interesting", "UNKNOWN"): "Whether this is strategically interesting was not established.",
-    ("strategically interesting", "REPORTED"): "Snippets describe it as strategically interesting. That is a reported excerpt.",
-    ("strategically interesting", "ASSUMED"): "Strategic interest was assumed, and the research did not show it.",
-    ("commercially real for someone", "REPORTED"): "Snippets describe a business someone could sell to. The pages were not read.",
-    ("commercially real for someone", "UNKNOWN"): "It is not established that anyone would pay.",
-    ("commercially real for someone", "ASSUMED"): "A market for someone was assumed, and the research did not show it.",
-    ("commercially real for idpetech", "ASSUMED"): "A commercial fit with IDPETECH was assumed, and the research did not show it.",
-    ("commercially real for idpetech", "UNKNOWN"): "A commercial fit with IDPETECH was not established.",
-    ("commercially real for idpetech", "REPORTED"): "A snippet describes a commercial fit with IDPETECH.",
-    ("deliverable by idpetech", "ASSUMED"): "IDPETECH's ability to deliver was assumed, and the research did not show it.",
-    ("deliverable by idpetech", "UNKNOWN"): "IDPETECH's ability to deliver was not established.",
-    ("worth the resource commitment", "ASSUMED"): "Whether this is worth the time was assumed, and the research did not show it.",
-    ("worth the resource commitment", "UNKNOWN"): "Whether this is worth the time was not established.",
-}
-
-
-def _tag_map(text: str) -> dict[str, str]:
-    return {match.group(1).lower(): match.group(2).upper() for match in _TAG_LINE.finditer(text or "")}
-
-
-def _sentences(tags: dict[str, str], keys: tuple[str, ...]) -> str:
-    lines = [_TAG_SENTENCE[(key, tags[key])] for key in keys if (key, tags.get(key, "")) in _TAG_SENTENCE]
-    return " ".join(lines)
-
-
-def _narrative(assessment: str) -> str:
-    plain = _plain(assessment or "")
-    return re.split(r"(?im)^Decision:\s*", plain, maxsplit=1)[0].strip()
-
-
-def _clarify_result(result: dict[str, Any]) -> None:
-    """Turn a label grid into sentences. An assumed fit is a deferral."""
-    tags = _tag_map(str(result.get("strategic_rationale") or ""))
-    tags.update(_tag_map(str(result.get("commercial_rationale") or "")))
-    if len(tags) < 3:
-        result["summary"] = _narrative(str(result.get("assessment") or ""))
-        return
-    strategic = _sentences(tags, ("strategically interesting", "worth the resource commitment"))
-    commercial = _sentences(
-        tags,
-        ("commercially real for someone", "commercially real for idpetech", "deliverable by idpetech"),
-    )
-    if strategic:
-        result["strategic_rationale"] = strategic
-    if commercial:
-        result["commercial_rationale"] = commercial
-    idpetech = tags.get("commercially real for idpetech")
-    deliverable = tags.get("deliverable by idpetech")
-    if result.get("decision") == "NO-GO" and {idpetech, deliverable} <= {"ASSUMED", "UNKNOWN", None}:
-        result["decision"] = "DEFER"
-        if str(result.get("next_action") or "").lower().startswith("stop"):
-            action = "Name the IDPETECH capability this subject would pay for before any pursuit."
-            result["next_action"] = action
-            result["next_step"] = action
-    result["summary"] = _narrative(str(result.get("assessment") or ""))
 
 
 def _display(result: dict[str, Any]) -> str:

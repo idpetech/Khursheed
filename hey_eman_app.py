@@ -51,6 +51,9 @@ from icp_workflow import advance_icp
 from icp_workflow import decide_icp_draft
 from icp_workflow import describe_workflow
 from icp_workflow import get_workflow
+from icp_workflow import list_company_notes
+from icp_workflow import refresh_icp_search
+from icp_workflow import track_company_note
 from executive_summary import generate_executive_summary
 from executive_summary import mail_origin
 from llm_agent import HeyEmanAgent
@@ -1098,20 +1101,50 @@ def _render_actions(
 
 
 def _render_companies(manager: Manager) -> None:
+    db_path = str(manager._db_path)
+    if st.button("Search again", key="icp-search-again"):
+        with st.spinner("Looking for new companies."):
+            result = refresh_icp_search(db_path, manager)
+        st.session_state.last_ack = result.get("message") or "Search finished."
+        st.rerun()
     actions = [action for action in _open_pending(manager) if _page_of(action) == "companies"]
     candidates = [action for action in actions if action.get("action_type") == "icp_candidate"]
     notes = [action for action in actions if action.get("action_type") != "icp_candidate"]
-    if not actions:
-        st.caption("No companies waiting.")
+    kept = list_company_notes(db_path)
+    if not actions and not kept:
+        st.caption("No companies waiting. Search again looks for new names. Companies already offered stay off this list.")
         return
     _mark("companies")
     if candidates:
         noun = "company" if len(candidates) == 1 else "companies"
         st.caption(f"{len(candidates)} {noun}. Add one to the list, qualify it, or skip it.")
         _render_actions(manager, candidates, open_first=_arriving("companies"))
+    elif not notes:
+        st.caption("No new companies waiting.")
     if notes:
         st.markdown(f"**Notes** · {len(notes)}")
         _render_actions(manager, notes, open_first=_arriving("companies") and not candidates)
+    _render_kept_notes(db_path, kept)
+
+
+def _render_kept_notes(db_path: str, notes: list[dict]) -> None:
+    if not notes:
+        return
+    st.markdown(f"**Kept notes** · {len(notes)}")
+    st.caption("An approved note was not sent. Open it here.")
+    for note in notes:
+        name = str(note.get("company_name") or "Company")
+        approved = note.get("step") == "approved"
+        state = "Approved. Not sent." if approved else "Left for later. Not sent."
+        when = str(note.get("updated_at") or "")[:10]
+        with st.expander(f"{name} · {state}"):
+            if when:
+                st.caption(when)
+            st.markdown(str(note.get("draft") or ""))
+            if approved and st.button("Track follow-up", key=f"note-track-{note.get('company_key')}"):
+                result = track_company_note(db_path, name)
+                st.session_state.last_ack = result.get("message") or "Tracked."
+                st.rerun()
 
 
 def _render_mail_page(manager: Manager) -> None:

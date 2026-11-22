@@ -237,6 +237,70 @@ class IcpWorkflowTests(unittest.TestCase):
             self.assertFalse(declined["sent"])
             self.assertEqual(_action_status(db_path, action_id), "rejected")
 
+    def test_search_again_asks_for_new_companies(self):
+        from icp_workflow import refresh_icp_search
+
+        class Finder(Skill):
+            name = "icp_finder"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def run(self, task: dict) -> dict:
+                self.calls += 1
+                self.last = task.get("payload")
+                return {"candidates": [{"company_name": "New Co"}]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            manager = Manager(db_path=db_path)
+            finder = Finder()
+            manager.register(finder)
+            found = refresh_icp_search(db_path, manager)
+            empty_finder = Finder()
+            empty_finder.run = lambda task: {"candidates": []}
+            manager.register(empty_finder)
+            # The first registration wins. Call the function with a fresh manager.
+            again = Manager(db_path=db_path)
+            again.register(empty_finder)
+            missed = refresh_icp_search(db_path, again)
+            failed_manager = Manager(db_path=db_path)
+
+            class Failed(Skill):
+                name = "icp_finder"
+
+                def run(self, task: dict) -> dict:
+                    return {"candidates": [], "error": "No search results."}
+
+            failed_manager.register(Failed())
+            failed = refresh_icp_search(db_path, failed_manager)
+            self.assertEqual(found["found"], 1)
+            self.assertIn("1 new company", found["message"])
+            self.assertEqual(finder.calls, 1)
+            self.assertIn("No new companies", missed["message"])
+            self.assertIn("No search results", failed["message"])
+
+    def test_an_approved_note_stays_readable_and_can_be_tracked_once(self):
+        from desk_work import list_commitments
+        from icp_workflow import list_company_notes
+        from icp_workflow import track_company_note
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path, manager, _prospector = _desk({"db_path": str(Path(tmpdir) / "t.db"), **_fit()})
+            advance_icp(db_path, COMPANY, manager)
+            action_id = get_workflow(db_path, "Northwind")["action_id"]
+            decide_icp_draft(db_path, action_id, approve=True)
+            notes = list_company_notes(db_path)
+            self.assertEqual([note["company_name"] for note in notes], ["Northwind"])
+            self.assertEqual(notes[0]["step"], "approved")
+            self.assertTrue(notes[0]["draft"])
+            first = track_company_note(db_path, "Northwind")
+            second = track_company_note(db_path, "Northwind")
+            self.assertFalse(first["sent"])
+            self.assertIn("Commitments", first["message"])
+            self.assertTrue(second.get("duplicate"))
+            self.assertEqual(len(list_commitments(db_path)), 1)
+
     def test_morning_finishes_a_draft_and_skips_research_and_approval(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "t.db")
@@ -376,6 +440,50 @@ if row and row["action_id"]:
             later = next(button for button in app.button if button.label == "Not now")
             later.click().run()
             self.assertEqual(get_workflow(db_path, "Northwind")["step"], "declined")
+
+    def test_companies_page_shows_search_and_the_kept_note(self):
+        from streamlit.testing.v1 import AppTest
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "t.db")
+            root = str(Path(__file__).resolve().parents[1])
+            script = f"""
+import sys
+sys.path.insert(0, {root!r})
+import sqlite3
+from manager import Manager
+from hey_eman_app import _render_companies
+from icp_workflow import company_key, ensure_workflow
+
+db = {db_path!r}
+ensure_workflow(db)
+conn = sqlite3.connect(db)
+conn.execute(
+    '''
+    INSERT OR REPLACE INTO workflow_runs (
+        company_key, company_name, website, step, findings_json, draft, updated_at
+    ) VALUES (?, 'Northwind', 'https://northwind.example', 'approved', '', ?, '2026-11-21T00:00:00+00:00')
+    ''',
+    (company_key('Northwind'), 'Hello from the approved note.'),
+)
+conn.commit()
+conn.close()
+_render_companies(Manager(db_path=db))
+"""
+            app = AppTest.from_string(script, default_timeout=20)
+            app.run()
+            self.assertEqual(app.exception, [])
+            labels = [button.label for button in app.button]
+            self.assertIn("Search again", labels)
+            self.assertIn("Track follow-up", labels)
+            titles = [item.label for item in app.expander]
+            self.assertTrue(any("Approved. Not sent." in title for title in titles))
+            text = "\n".join(item.value for item in app.markdown)
+            next(button for button in app.button if button.label == "Track follow-up").click().run()
+            from desk_work import list_commitments
+
+            titles = [row["title"] for row in list_commitments(db_path)]
+            self.assertEqual(titles, ["Follow up on the approved note for Northwind"])
 
     def test_a_role_note_still_requires_a_kept_role(self):
         with tempfile.TemporaryDirectory() as tmpdir:

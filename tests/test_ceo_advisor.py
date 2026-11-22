@@ -11,7 +11,6 @@ from desk_work import add_commitment
 from desk_work import list_commitments
 from manager import Manager
 from skills.ceo_advisor import CeoAdvisorSkill
-from skills.ceo_advisor import _has_decision
 from skills.ceo_advisor import classify_request
 from skills.ceo_advisor import gather_research
 from skills.ceo_advisor import is_ceo_request
@@ -19,18 +18,22 @@ from skills.ceo_advisor import question_from
 from skills.ceo_advisor import track_latest_advice
 
 
-ASSESSMENT = """The open commitment is the only commercial item on the desk.
-
-Decision: CONDITIONAL GO
-Strategic rationale: The commitment is already chosen.
-Commercial rationale: A proposal is the path to revenue.
-Evidence: The desk lists one open commercial commitment.
-Unknowns: Whether the other party will pay.
-Resource commitment: The time to make the call.
-Opportunity cost: Other outreach waits.
-Next action: Call the prospect this week.
-Confidence: Medium, because the desk does not show a price.
-"""
+ASSESSMENT = json.dumps(
+    {
+        "assessment": "The open commitment is the only commercial item on the desk.",
+        "decision": "CONDITIONAL GO",
+        "strategic_rationale": "The commitment is already chosen.",
+        "commercial_rationale": "A proposal is the path to revenue.",
+        "evidence": "The desk lists one open commercial commitment.",
+        "unknowns": "Whether the other party will pay.",
+        "assumptions": "The commitment is still open.",
+        "conditions": "The other party agrees to pay.",
+        "resource_commitment": "The time to make the call.",
+        "opportunity_cost": "Other outreach waits.",
+        "next_action": "Call the prospect this week.",
+        "confidence": "Medium, because the desk does not show a price.",
+    }
+)
 
 
 class CeoAdvisorTests(unittest.TestCase):
@@ -47,8 +50,9 @@ class CeoAdvisorTests(unittest.TestCase):
             complete.assert_called_once()
             self.assertFalse(result["executed"])
             self.assertTrue(result["advisory"])
-            self.assertTrue(_has_decision(result["assessment"]))
-            self.assertIn("Decision: CONDITIONAL GO", result["assessment"])
+            self.assertEqual(result["decision"], "CONDITIONAL GO")
+            self.assertIn("Decision: CONDITIONAL GO", result["display"])
+            self.assertEqual(result["display"].count("Decision:"), 1)
             self.assertEqual([row["title"] for row in list_commitments(db_path)], ["Send the proposal"])
             pending = sqlite3.connect(db_path).execute("SELECT COUNT(*) FROM pending_actions").fetchone()[0]
             self.assertEqual(pending, 0)
@@ -313,10 +317,11 @@ class CeoAdvisorTests(unittest.TestCase):
             db_path = str(Path(tmpdir) / "t.db")
             Manager(db_path=db_path)
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
-                with patch("skills.ceo_advisor._complete", return_value="I think this is fine."):
+                with patch("skills.ceo_advisor._complete", return_value="I think this is fine.") as complete:
                     result = CeoAdvisorSkill().run(
                         {"db_path": db_path, "payload": {"question": "Challenge my current priorities."}}
                     )
+            self.assertEqual(complete.call_count, 2)
             self.assertIn("did not reach a decision", result["error"])
             self.assertNotIn("decision_id", result)
             conn = sqlite3.connect(db_path)
@@ -359,105 +364,38 @@ class CeoAdvisorTests(unittest.TestCase):
             ]
             self.assertEqual(names, ["ceo_advisor"])
 
-    def test_a_missing_decision_line_is_recovered_when_the_judgment_is_stated(self):
-        unlabeled = """
-OneKiraana sells private-label infrastructure to kirana stores.
-
-**Strategically interesting:** Yes. The model is a real retail business.
-**Commercially real for someone:** Yes. Stores are the buyer.
-**Commercially real for IDPETECH:** Unknown. IDPETECH's fit is not established.
-**Deliverable by IDPETECH:** Unknown.
-**Worth the resource commitment:** Unknown.
-**Evidence:** A snippet reports seed funding.
-**Unknowns:** Whether IDPETECH can deliver anything this company would buy.
-**Assumptions:** No grocery practice is on file.
-**Conditions:** A named capability that a store would pay for.
-**Resource commitment:** None until that capability is named.
-**Opportunity cost:** Other work waits.
-**Next action:** Stop. Do not pursue this.
-**Confidence:** Medium, because the fit is unknown.
-"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = str(Path(tmpdir) / "t.db")
-            Manager(db_path=db_path)
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test", "TAVILY_API_KEY": "test"}):
-                with patch(
-                    "skills.ceo_advisor.tavily_search",
-                    return_value={"results": [{"title": "OneKiraana", "url": "https://onekiraana.com", "content": "Seed funding."}]},
-                ):
-                    with patch("skills.ceo_advisor._complete", return_value=unlabeled) as complete:
-                        result = CeoAdvisorSkill().run(
-                            {"db_path": db_path, "payload": {"question": "AS a CEO asses OneKiraana"}}
-                        )
-            self.assertEqual(complete.call_count, 1)
-            self.assertEqual(result["decision"], "DEFER")
-            self.assertIn("Decision: DEFER", result["display"])
-            self.assertIn("would pay for", result["next_action"])
-            self.assertTrue(result["decision_id"])
-
-    def test_a_stated_no_fit_without_a_decision_line_is_no_go(self):
-        unlabeled = """
-**Strategically interesting:** The market is real for operators.
-**Commercially real for IDPETECH:** No. IDPETECH cannot sell this.
-**Deliverable by IDPETECH:** No.
-**Evidence:** The subject is outside the stated capabilities.
-**Unknowns:** None that would change the fit.
-**Resource commitment:** None.
-**Opportunity cost:** None.
-**Next action:** Stop. Do not pursue this.
-**Confidence:** High, because the capability is absent.
-"""
+    def test_prose_and_a_label_grid_are_not_turned_into_a_decision(self):
+        prose = "OneKiraana is interesting. Commercially real for IDPETECH: Unknown. Next action: Stop."
+        grid = json.dumps(
+            {
+                "assessment": "OneKiraana helps kirana stores.",
+                "decision": "NO-GO",
+                "strategic_rationale": "Strategically interesting: UNKNOWN. Worth the resource commitment: ASSUMED.",
+                "commercial_rationale": (
+                    "Commercially real for someone: REPORTED. "
+                    "Commercially real for IDPETECH: ASSUMED. "
+                    "Deliverable by IDPETECH: ASSUMED."
+                ),
+                "next_action": "Stop. Do not pursue this.",
+                "confidence": "Medium",
+            }
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "t.db")
             Manager(db_path=db_path)
             with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
-                with patch("skills.ceo_advisor._complete", return_value=unlabeled):
-                    result = CeoAdvisorSkill().run(
-                        {"db_path": db_path, "payload": {"question": "Assess the car wash business."}}
-                    )
-            self.assertEqual(result["decision"], "NO-GO")
-            self.assertIn("Stop", result["next_action"])
-
-    def test_a_label_grid_is_written_as_sentences_and_an_assumed_fit_defers(self):
-        labeled = """
-OneKiraana helps kirana stores sell under their own brand. A snippet reports seed funding.
-
-Decision: NO-GO
-Strategic rationale:
-- Strategically interesting: UNKNOWN
-- Commercially real for someone: REPORTED
-- Commercially real for IDPETECH: ASSUMED
-- Deliverable by IDPETECH: ASSUMED
-- Worth the resource commitment: ASSUMED
-Commercial rationale:
-- Strategically interesting: UNKNOWN
-- Commercially real for someone: REPORTED
-- Commercially real for IDPETECH: ASSUMED
-- Deliverable by IDPETECH: ASSUMED
-- Worth the resource commitment: ASSUMED
-Evidence: A snippet reports seed funding.
-Unknowns: The fit of IDPETECH's capabilities with this company.
-Assumptions: IDPETECH lacks the capability.
-Conditions: None applicable.
-Resource commitment: Not applicable.
-Opportunity cost: Other work waits.
-Next action: Stop. Do not pursue this.
-Confidence: Medium, because the fit was not shown.
-"""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = str(Path(tmpdir) / "t.db")
-            Manager(db_path=db_path)
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "test"}):
-                with patch("skills.ceo_advisor._complete", return_value=labeled):
-                    result = CeoAdvisorSkill().run(
+                with patch("skills.ceo_advisor._complete", return_value=prose):
+                    prose_result = CeoAdvisorSkill().run(
                         {"db_path": db_path, "payload": {"question": "Review the quarter."}}
                     )
-        self.assertEqual(result["decision"], "DEFER")
-        self.assertIn("assumed, and the research did not show it", result["commercial_rationale"])
-        self.assertNotIn("UNKNOWN", result["display"])
-        self.assertEqual(result["display"].count("Decision:"), 1)
-        self.assertIn("kirana stores", result["display"])
-        self.assertIn("would pay for", result["next_action"])
+                with patch("skills.ceo_advisor._complete", return_value=grid):
+                    grid_result = CeoAdvisorSkill().run(
+                        {"db_path": db_path, "payload": {"question": "Review the quarter."}}
+                    )
+        self.assertIn("did not reach a decision", prose_result["error"])
+        self.assertNotIn("decision_id", prose_result)
+        self.assertIn("did not reach a decision", grid_result["error"])
+        self.assertNotIn("decision_id", grid_result)
 
 
 if __name__ == "__main__":
