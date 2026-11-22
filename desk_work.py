@@ -364,12 +364,30 @@ def morning_focus(db_path: str | Path, today: date | None = None) -> dict[str, A
     conditional_line = _conditional_decision_line(db_path)
     if conditional_line:
         lines.append(conditional_line)
+    suggestion = _suggestion_line(db_path, moment)
+    if suggestion:
+        lines.append(suggestion)
     return {
         "lines": lines,
         "pause_research": pause,
         "bill_line": bill_line,
         "role_line": role_line,
     }
+
+
+def _suggestion_line(db_path: str | Path, today: date) -> str:
+    """A high-priority finding with no follow-up. This is not a commitment."""
+    try:
+        from briefing import next_suggestion
+        from briefing import remember_suggestion
+
+        hint = next_suggestion(db_path, today)
+        if hint.get("status") == "new" and hint.get("line"):
+            remember_suggestion(db_path, str(hint.get("key") or ""), str(hint.get("evidence") or ""))
+            return str(hint["line"])
+    except Exception:
+        return ""
+    return ""
 
 
 def _ensure_pursuit_date(conn: sqlite3.Connection) -> None:

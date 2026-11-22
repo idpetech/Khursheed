@@ -33,80 +33,43 @@ def generate_executive_summary(
             lookback_days = 1
     since = timestamp - timedelta(days=lookback_days)
     runs = manager.get_runs_since(since)
-    window = _window_phrase(lookback_days)
 
-    pending_bills = _format_desk_bills(_desk_bills(db_path))
-    leads = _extract_top_leads(runs, limit=3)
-    priority_alerts = _extract_priority_alerts(min_priority=2, db_path=db_path)
-    cto_opportunities = _extract_cto_opportunities(runs, limit=5)
     icp_companies = _extract_icp_companies(runs, limit=5)
     open_loops = _extract_open_loops(db_path)
-    priority_action = _highest_other_priority_action(db_path)
-    linkedin_draft = _newest_linkedin_draft(db_path)
-    recommendations = _build_recommendations(priority_action, open_loops, linkedin_draft)
-
-    icp_text = _format_icp_companies(icp_companies, window, _research_error(runs, "icp_prospector"))
+    prospect_note = ""
     try:
         from desk_settings import icp_enabled
 
         if not icp_companies and not icp_enabled(db_path):
-            icp_text = "_ICP is off. Turn it on in Config._"
+            prospect_note = "_ICP is off. Turn it on in Config._"
         elif not icp_companies:
             waiting = _waiting_icp_choices(db_path)
             if waiting:
                 noun = "company is" if waiting == 1 else "companies are"
-                icp_text = f"_{waiting} {noun} waiting in Companies._"
+                prospect_note = f"_{waiting} {noun} waiting in Companies._"
     except Exception:
         pass
+    research_errors = [
+        f"Last search failed: {_research_error(runs, skill)[:180]}"
+        for skill in ("lead_scout", "cto_radar", "icp_prospector")
+        if _research_error(runs, skill)
+    ]
+    research_note = research_errors[0] if research_errors else ""
 
+    from briefing import build_daily_brief
     from desk_work import morning_focus
 
     focus_day = timestamp.astimezone().date() if timestamp.tzinfo else timestamp.date()
     focus = morning_focus(db_path, focus_day)
-    if focus["pause_research"]:
-        research = [
-            "## Research",
-            "_Research is waiting until the open role has a date._",
-            "",
-        ]
-    else:
-        research = [
-            "## Top Leads",
-            _format_leads(leads, window, _research_error(runs, "lead_scout")),
-            "",
-            "## Fractional CTO Opportunities",
-            _format_cto_opportunities(
-                cto_opportunities, window, _research_error(runs, "cto_radar")
-            ),
-            "",
-            "## Top ICP Companies",
-            icp_text,
-            "",
-        ]
-    today_lines = "\n".join(f"- {line}" for line in focus["lines"])
-    report = "\n".join(
-        [
-            f"# Executive Summary - {timestamp.date().isoformat()}",
-            "",
-            "## Today",
-            today_lines,
-            "",
-            "## Priority Alerts",
-            _format_priority_alerts(priority_alerts),
-            "",
-            "## Pending Bills",
-            pending_bills,
-            "",
-            *_mail_scan_section(runs),
-            *research,
-            "## Open Loops",
-            _format_open_loops(open_loops),
-            "",
-            "## Recommended Actions",
-            _format_recommendations(recommendations),
-            "",
-            *_extra_sections(db_path, runs),
-        ]
+    report = build_daily_brief(
+        db_path,
+        runs,
+        open_loops,
+        focus["lines"],
+        focus["pause_research"],
+        focus_day,
+        research_note=research_note if not focus["pause_research"] else "",
+        prospect_note=prospect_note if not focus["pause_research"] else "",
     )
     notifier.send(report)
     return report
@@ -117,18 +80,31 @@ def mobile_update(report: str) -> str:
     sections = _report_sections(report)
     date = "today"
     for line in report.splitlines():
+        if line.startswith("# Executive Brief"):
+            date = line.split("—", 1)[-1].strip()
+            break
         if line.startswith("# Executive Summary - "):
             date = line.split(" - ", 1)[1].strip()
             break
     parts = [f"Enaam · {date}", ""]
-    if sections.get("Today"):
-        parts.extend(_mobile_lines("Today", sections.get("Today"), ""))
-    parts.extend(_mobile_lines("Bills", sections.get("Pending Bills"), "No bills."))
+    focus_body = sections.get("Executive Focus") or sections.get("Today")
+    if focus_body:
+        parts.extend(_mobile_lines("Today", focus_body, ""))
+    if "Pending Bills" in sections:
+        parts.extend(_mobile_lines("Bills", sections.get("Pending Bills"), "No bills."))
     if sections.get("Mail scan"):
         parts.extend(_mobile_lines("Mail", sections.get("Mail scan"), ""))
-    parts.extend(_mobile_lines("Needs you", sections.get("Priority Alerts"), "Nothing needs you."))
-    if sections.get("Research"):
-        parts.extend(_mobile_lines("Research", sections.get("Research"), ""))
+    if "Priority Attention" in sections:
+        parts.extend(_mobile_lines("Needs you", sections.get("Priority Attention"), "Nothing needs you."))
+    elif "Priority Alerts" in sections:
+        parts.extend(_mobile_lines("Needs you", sections.get("Priority Alerts"), "Nothing needs you."))
+    watch = sections.get("Research and Opportunities")
+    if watch is None:
+        watch = sections.get("Research")
+    if watch is None:
+        watch = sections.get("Research and Watchlist")
+    if watch is not None:
+        parts.extend(_mobile_lines("Research", watch, ""))
     else:
         parts.extend(_mobile_lines("Leads", sections.get("Top Leads"), "No new leads."))
         parts.extend(_mobile_lines("CTO", sections.get("Fractional CTO Opportunities"), "No new CTO roles."))

@@ -441,8 +441,10 @@ class SummaryCoverageTests(unittest.TestCase):
             self.assertEqual(_extract_open_loops(db_path), [])
 
         empty = generate_executive_summary(Manager(db_path=str(Path(tmp.name) / "empty.db")), RecordingNotifier())
-        self.assertIn("_No open loops._", empty)
-        self.assertIn("_No open priority alerts._", empty)
+        self.assertIn("## Open Commitments", empty)
+        self.assertIn("None.", empty)
+        self.assertIn("No action is justified", empty)
+        self.assertNotIn("## Open Loops", empty)
         self.assertNotIn("## Tasks Completed", empty)
 
 
@@ -669,7 +671,7 @@ class AskCoverageTests(unittest.TestCase):
         manager.register(SifterStub())
         manager.load_tasks = lambda _path: [{"id": "only", "skills": ["sifter"], "payload": {}}]
         with patch("ask.daily_brief_notifier", return_value=RecordingNotifier()):
-            self.assertIn("Executive Summary", ask._handle_query("executive summary", manager))
+            self.assertIn("Executive Brief", ask._handle_query("executive summary", manager))
         self.assertIn("only", ask._handle_query("todos", manager))
         self.assertIn("Email check", ask._handle_query("check emails", manager))
         self.assertIn("Tasks executed", ask._handle_query("run tasks", manager))

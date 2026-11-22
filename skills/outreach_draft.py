@@ -3,12 +3,37 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from skills.base import Skill
+from skills.tavily_client import tavily_search
 
 
 logger = logging.getLogger(__name__)
+
+_ROLE_RE = re.compile(r"\b(co-?founder|founder|CEO)\b", re.IGNORECASE)
+_NAME_RE = re.compile(r"\b([A-Z][a-z]+(?:[ \t]+[A-Z][a-z]+){1,2})\b")
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_NAME_STOP = {
+    "the",
+    "a",
+    "an",
+    "our",
+    "this",
+    "that",
+    "and",
+    "for",
+    "with",
+    "from",
+    "their",
+    "his",
+    "her",
+    "email",
+    "contact",
+    "about",
+}
+_NAME_GAP = 40
 
 
 class OutreachDraftSkill(Skill):
@@ -50,10 +75,15 @@ def _queue_company(db_path: str, company_name: str, payload: dict[str, Any]) -> 
     from icp_workflow import company_key
     from priority_inbox import emit_priority_action
 
+    saved = _saved_draft(db_path, company_name)
+    if saved:
+        return saved
+
     website = str(payload.get("website") or "").strip()
     rationale = str(payload.get("rationale") or "").strip()
     purpose = str(payload.get("purpose") or "").strip()
-    body = _body(company_name, website, purpose, rationale)
+    recipient = _lookup_recipient(company_name, website)
+    body = _body(company_name, website, purpose, rationale, recipient)
     try:
         action_id = emit_priority_action(
             kind="outreach_draft",
@@ -90,7 +120,166 @@ def _latest_kept(db_path: str) -> tuple[str, str]:
     return str(first.get("title") or ""), str(first.get("url") or "")
 
 
-def _body(title: str, url: str, purpose: str = "", rationale: str = "") -> str:
+def _saved_draft(db_path: str, company_name: str) -> dict[str, Any] | None:
+    """Return a note that was already stored. Reading it does not search."""
+    from icp_workflow import company_key
+    from icp_workflow import get_workflow
+
+    row = get_workflow(db_path, company_name)
+    if row and str(row.get("draft") or "").strip():
+        return {
+            "draft": str(row["draft"]),
+            "title": company_name,
+            "sent": False,
+            "action_id": str(row.get("action_id") or ""),
+        }
+    source_key = f"icp-outreach:{company_key(company_name)}"
+    return _saved_action(db_path, company_name, source_key)
+
+
+def _saved_action(db_path: str, company_name: str, source_key: str) -> dict[str, Any] | None:
+    import json
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=30.0)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT action_id, payload_json FROM pending_actions WHERE source_key = ?",
+            (source_key,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        payload = json.loads(row[1] or "{}")
+    except json.JSONDecodeError:
+        return None
+    body = str(payload.get("body") or "")
+    if not body.strip():
+        return None
+    return {"draft": body, "title": company_name, "sent": False, "action_id": str(row[0])}
+
+
+def _lookup_recipient(company_name: str, website: str) -> dict[str, str]:
+    """One search for a founder or CEO named on a public page."""
+    try:
+        data = tavily_search(_recipient_query(company_name, website), 5)
+    except Exception as exc:
+        logger.warning("Recipient lookup failed: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    for item in data.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        snippet = _snippet(item)
+        found = _person_in_snippet(snippet, company_name)
+        if not found:
+            continue
+        source = str(item.get("url") or "").strip()
+        if not source:
+            continue
+        name, role = found
+        return {"name": name, "role": role, "email": _email_in(snippet), "source": source}
+    return {}
+
+
+def _recipient_query(company_name: str, website: str) -> str:
+    from skills.icp_finder import _own_website
+
+    query = f"{company_name} founder or CEO"
+    own = _own_website(company_name, website)
+    if own:
+        return f"{query} {own}"
+    return query
+
+
+def _snippet(item: dict[str, Any]) -> str:
+    title = str(item.get("title") or "").strip()
+    content = str(item.get("content") or "").strip()
+    return f"{title}\n{content}".strip()
+
+
+def _person_in_snippet(text: str, company_name: str) -> tuple[str, str] | None:
+    company = _name_key(company_name)
+    best: tuple[int, int, str, str] | None = None
+    for role_match in _ROLE_RE.finditer(text):
+        role = _role_label(role_match.group(1))
+        for name_match in _NAME_RE.finditer(text):
+            if name_match.start() < role_match.end() and name_match.end() > role_match.start():
+                continue
+            gap = _span_gap(
+                name_match.start(),
+                name_match.end(),
+                role_match.start(),
+                role_match.end(),
+            )
+            if gap > _NAME_GAP:
+                continue
+            name = name_match.group(1)
+            if _skip_name(name, company):
+                continue
+            rank = (gap, name_match.start())
+            if best is None or rank < (best[0], best[1]):
+                best = (gap, name_match.start(), name, role)
+    if best is None:
+        return None
+    return best[2], best[3]
+
+
+def _span_gap(left_start: int, left_end: int, right_start: int, right_end: int) -> int:
+    if left_end <= right_start:
+        return right_start - left_end
+    if right_end <= left_start:
+        return left_start - right_end
+    return 0
+
+
+def _skip_name(name: str, company: str) -> bool:
+    first = name.split()[0].lower()
+    if first in _NAME_STOP:
+        return True
+    return _name_key(name) == company
+
+
+def _name_key(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+
+
+def _role_label(raw: str) -> str:
+    word = re.sub(r"[^a-z]", "", raw.lower())
+    if word == "ceo":
+        return "CEO"
+    if word == "cofounder":
+        return "cofounder"
+    return "founder"
+
+
+def _email_in(text: str) -> str:
+    match = _EMAIL_RE.search(text)
+    return match.group(0) if match else ""
+
+
+def _body(
+    title: str,
+    url: str,
+    purpose: str = "",
+    rationale: str = "",
+    recipient: dict[str, str] | None = None,
+) -> str:
+    text = _letter(title, url, purpose, rationale)
+    if recipient is None:
+        return text
+    return _with_recipient(text, recipient)
+
+
+def _letter(title: str, url: str, purpose: str, rationale: str) -> str:
     from desk_work import outreach_body
 
     if "cto" in (purpose or "CTO opportunity").lower():
@@ -103,3 +292,19 @@ def _body(title: str, url: str, purpose: str = "", rationale: str = "") -> str:
         f"{because}\n"
         "Haseeb"
     )
+
+
+def _with_recipient(text: str, recipient: dict[str, str]) -> str:
+    name = (recipient.get("name") or "").strip()
+    if not name:
+        return f"No recipient found.\n\n{text}"
+    first = name.split()[0]
+    if text.startswith("Hello,"):
+        text = f"Hello {first}," + text[len("Hello,") :]
+    email = (recipient.get("email") or "").strip() or "none on the source page."
+    header = (
+        f"To: {name}, {recipient.get('role') or ''}\n"
+        f"Email: {email}\n"
+        f"Source: {recipient.get('source') or ''}"
+    )
+    return f"{header}\n\n{text}"

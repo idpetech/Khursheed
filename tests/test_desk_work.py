@@ -416,7 +416,7 @@ class MorningFocusTests(unittest.TestCase):
             manager = Manager(db_path=db_path)
             self._keep(db_path)
             report = generate_executive_summary(manager, _Silent(), now=datetime(2026, 11, 19, 8, 0))
-            self.assertTrue(report.splitlines()[2].startswith("## Today"))
+            self.assertTrue(report.splitlines()[2].startswith("## Executive Focus"))
             self.assertIn("Set a date on a kept role.", report)
             self.assertIn("Research is waiting", report)
             self.assertNotIn("## Top Leads", report)

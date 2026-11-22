@@ -219,10 +219,14 @@ class BriefTests(unittest.TestCase):
             notifier = RecordingNotifier()
             report = generate_executive_summary(manager, notifier)
             self.assertIn("Call Northwind", report)
-            self.assertIn("- Pay the host", report)
+            self.assertIn("Pay the host", report)
             self.assertNotIn("Handle priority action: Pay the host", report)
-            self.assertIn("2. Follow up: Call Northwind", report)
-            self.assertIn("3. Review LinkedIn draft: Draft: hiring", report)
+            self.assertNotIn("Review LinkedIn draft", report)
+            self.assertNotIn("## Open Loops", report)
+            commitments = report.split("## Open Commitments", 1)[1].split("\n## ", 1)[0]
+            self.assertIn("None.", commitments)
+            self.assertNotIn("Call Northwind", commitments)
+            self.assertNotIn("Pay the host", commitments)
 
     def test_cleanup_keeps_real_bills(self):
         with tempfile.TemporaryDirectory() as tmpdir:

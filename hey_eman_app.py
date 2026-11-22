@@ -759,6 +759,56 @@ def _render_pursuits(manager: Manager, pursuits: list[dict]) -> None:
                 st.rerun()
 
 
+def _render_brief_actions(db_path: str, brief_ready: bool) -> None:
+    """Open, review, dismiss, or approve a recommendation. Approve is the commitment."""
+    from briefing import approve_brief_commitment
+    from briefing import desk_recommendations
+    from briefing import dismiss_brief_item
+    from briefing import mark_brief_reviewed
+
+    try:
+        items = desk_recommendations(db_path)
+    except Exception:
+        logger.warning("Could not read briefing recommendations", exc_info=True)
+        return
+    if not items:
+        if brief_ready:
+            st.caption("No action is justified from the current research.")
+        return
+    st.caption("A suggestion is not a commitment. Approve is the only control that saves one.")
+    for item in items:
+        title = str(item.get("title") or "Item")
+        url = str(item.get("url") or "")
+        key = str(item.get("item_key") or "")
+        token = "".join(char if char.isalnum() else "-" for char in key)[:48]
+        score = item.get("score")
+        band = item.get("band") or ""
+        kind = item.get("classification") or ""
+        confidence = item.get("confidence")
+        st.markdown(f"**{title}** · {kind} · {score} {band} · confidence {confidence}")
+        why = str(item.get("why") or "").strip()
+        if why:
+            st.caption(why)
+        concern = " ".join(str(part) for part in (item.get("concerns") or []))
+        if concern:
+            st.caption(concern)
+        if url:
+            st.link_button("Open", url, use_container_width=True)
+        reviewed, dismiss, approve = st.columns(3)
+        if reviewed.button("Reviewed", key=f"brief-reviewed-{token}", use_container_width=True):
+            result = mark_brief_reviewed(db_path, key, title, url)
+            st.session_state.last_ack = result.get("message") or "Reviewed."
+            st.rerun()
+        if dismiss.button("Dismiss", key=f"brief-dismiss-{token}", use_container_width=True):
+            result = dismiss_brief_item(db_path, key, title, url)
+            st.session_state.last_ack = result.get("message") or "Dismissed."
+            st.rerun()
+        if approve.button("Approve commitment", key=f"brief-approve-{token}", use_container_width=True):
+            result = approve_brief_commitment(db_path, key, title)
+            st.session_state.last_ack = result.get("message") or "Saved."
+            st.rerun()
+
+
 def _render_saved_leads(db_path: str, loops: list[dict]) -> None:
     """Show each saved search page with a link and a way to clear it."""
     labels = {"cto_radar": "Fractional CTO search", "icp_prospector": "ICP company"}
@@ -844,6 +894,7 @@ def _render_now(manager: Manager) -> None:
         if st.button("Refresh brief", key="refresh-brief"):
             st.session_state.brief = generate_executive_summary(manager, _brief_notifier())
             st.rerun()
+        _render_brief_actions(db_path, bool(brief))
         if brief:
             st.markdown(brief)
         else:
