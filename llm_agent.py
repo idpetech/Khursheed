@@ -89,7 +89,9 @@ class HeyEmanAgent:
             "verbatim. Do not rewrite titles, reformat amounts or dates, or invent values. "
             "It already includes From, Subject, Mailbox, Sent, and Recorded; if a line says "
             "'not recorded', keep it exactly as 'not recorded'. "
-            "Always use the appropriate tool and summarize the result clearly."
+            "Always use the appropriate tool and summarize the result clearly. "
+            "When you summarize a skill result, name only companies that result lists "
+            "and do not add a company the tool did not return."
         )
         return base + principal_prompt_block(self._profile_path)
 

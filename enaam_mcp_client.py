@@ -1,22 +1,39 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import requests
 
 
 class EnaamMCPClient:
-    def __init__(self, base_url: str, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 30,
+        auth_env: str = "",
+        health_path: str = "/health",
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._auth_env = auth_env or ""
+        self._health_path = health_path or "/health"
 
     def health(self) -> dict[str, Any]:
-        response = requests.get(f"{self._base_url}/health", timeout=self._timeout)
+        response = requests.get(
+            self._health_url(),
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
         response.raise_for_status()
         return response.json()
 
     def capabilities(self) -> dict[str, Any]:
-        response = requests.get(f"{self._base_url}/capabilities", timeout=self._timeout)
+        response = requests.get(
+            f"{self._base_url}/capabilities",
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -34,7 +51,12 @@ class EnaamMCPClient:
         }
         if request_id:
             payload["id"] = request_id
-        response = requests.post(self._base_url, json=payload, timeout=self._timeout)
+        response = requests.post(
+            self._base_url,
+            json=payload,
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
         response.raise_for_status()
         return response.json()
 
@@ -58,3 +80,21 @@ class EnaamMCPClient:
             params={"query": query, "context": context or {}},
             response_type="chat",
         )
+
+    def _health_url(self) -> str:
+        path = (self._health_path or "/health").strip() or "/health"
+        if path.startswith("http://") or path.startswith("https://"):
+            return path
+        if not path.startswith("/"):
+            path = "/" + path
+        return f"{self._base_url}{path}"
+
+    def _headers(self) -> dict[str, str]:
+        """Bearer token only when the named env var is set. The value is never logged."""
+        name = self._auth_env.strip()
+        if not name:
+            return {}
+        value = os.environ.get(name, "").strip()
+        if not value:
+            return {}
+        return {"Authorization": f"Bearer {value}"}

@@ -3,6 +3,11 @@
 Enaam calls the existing skills one step at a time. Research can finish
 on its own. A note stays in To review until a person approves it, and
 approval does not send the note.
+
+A saved note for another purpose stays on the same company row. The desk
+asks before qualifying that purpose. Yes copies the saved note into
+prior_notes_json, then runs the new purpose. No leaves the row as it is.
+Nothing is sent.
 """
 
 from __future__ import annotations
@@ -27,15 +32,31 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
     findings_json TEXT NOT NULL DEFAULT '',
     draft TEXT NOT NULL DEFAULT '',
     action_id TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    prior_notes_json TEXT NOT NULL DEFAULT ''
+)
+"""
+
+CONFIRM_SQL = """
+CREATE TABLE IF NOT EXISTS qualify_confirmations (
+    session_id TEXT PRIMARY KEY,
+    company_name TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    previous_purpose TEXT NOT NULL,
     updated_at TEXT NOT NULL
 )
 """
 
 WAITING = frozenset({"awaiting_approval", "approved", "declined", "not_a_fit"})
+HELD_NOTE = frozenset({"awaiting_approval", "approved", "declined"})
 RESUME_STEPS = frozenset({"decide", "draft"})
 QUALIFY = "icp_prospector"
 DRAFT = "outreach_draft"
 DEFAULT_PURPOSE = "CTO opportunity"
+DESK_SESSION = "hey-eman"
+_CTO_ENGAGEMENT = re.compile(
+    r"^(?:(?:a|an|the)\s+)?(?:fractional\s+)?cto(?:\s+(?:opportunity|engagement))?$"
+)
 
 
 def company_key(name: str) -> str:
@@ -49,9 +70,20 @@ def ensure_workflow(db_path: str | Path) -> Path:
     try:
         with conn:
             conn.execute(WORKFLOW_SQL)
+            conn.execute(CONFIRM_SQL)
+            _ensure_prior_notes_column(conn)
     finally:
         conn.close()
     return resolved
+
+
+def _ensure_prior_notes_column(conn: sqlite3.Connection) -> None:
+    """Keep an older note on the company row when a new purpose replaces it."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(workflow_runs)")}
+    if "prior_notes_json" not in columns:
+        conn.execute(
+            "ALTER TABLE workflow_runs ADD COLUMN prior_notes_json TEXT NOT NULL DEFAULT ''"
+        )
 
 
 def describe_workflow(row: dict[str, Any]) -> str:
@@ -82,11 +114,17 @@ def advance_icp(
     company: dict[str, Any],
     manager: Any,
     purpose: str = DEFAULT_PURPOSE,
+    confirmed: bool = False,
+    session_id: str = DESK_SESSION,
 ) -> dict[str, Any]:
     """Run the next unfinished step for one company.
 
     A step already stored is not run again. Waiting for approval does not
     call a skill. purpose is what the company is being qualified for.
+    A saved note for a different purpose stays on the row until the same
+    session confirms it. The reply asks, and it does not present the old
+    note as the new answer. A confirmed yes copies that note aside, then
+    qualifies the new purpose. Nothing is sent.
     """
     asked = (purpose or "").strip() or DEFAULT_PURPOSE
     name = str(company.get("company_name") or company.get("name") or "").strip()
@@ -98,8 +136,62 @@ def advance_icp(
     if row["website"] and not website:
         website = row["website"]
     step = row["step"]
-    if step == "not_a_fit" and asked != _purpose(_findings(row)):
+    stored_purpose = _purpose(_findings(row))
+    replacing: dict[str, Any] | None = None
+
+    def _fail(message: str, failed_step: str) -> dict[str, Any]:
+        if replacing is not None:
+            _save(
+                db_path,
+                key,
+                step=str(replacing["step"]),
+                findings=replacing["findings"],
+                draft=str(replacing["draft"]),
+                action_id=str(replacing["action_id"]),
+                prior_notes=replacing["prior_notes"],
+            )
+        return {
+            "status": "error",
+            "message": message,
+            "sent": False,
+            "step": failed_step,
+            "company": name,
+        }
+
+    if step == "not_a_fit" and not _same_purpose(asked, stored_purpose):
         row = _save(db_path, key, step="qualify")
+        step = "qualify"
+    elif step in HELD_NOTE and not _same_purpose(asked, stored_purpose):
+        if not confirmed:
+            _remember_confirmation(db_path, session_id, name, asked, stored_purpose)
+            return {
+                "status": "ok",
+                "step": step,
+                "message": _confirm_purpose_message(name, stored_purpose, asked),
+                "sent": False,
+                "company": name,
+                "note_withheld": True,
+                "needs_confirmation": True,
+            }
+        findings_now = json.loads(json.dumps(_findings(row)))
+        prior = _prior_notes(row)
+        replacing = {
+            "step": step,
+            "draft": str(row.get("draft") or ""),
+            "action_id": str(row.get("action_id") or ""),
+            "findings": findings_now,
+            "prior_notes": json.loads(json.dumps(prior)),
+        }
+        prior.append(
+            {
+                "step": step,
+                "purpose": stored_purpose,
+                "draft": replacing["draft"],
+                "action_id": replacing["action_id"],
+                "findings": findings_now,
+            }
+        )
+        row = _save(db_path, key, step="qualify", draft="", prior_notes=prior)
         step = "qualify"
     if step in WAITING:
         return _view(row)
@@ -114,13 +206,7 @@ def advance_icp(
             },
         )
         if result.get("error"):
-            return {
-                "status": "error",
-                "message": str(result["error"]),
-                "sent": False,
-                "step": "qualify",
-                "company": name,
-            }
+            return _fail(str(result["error"]), "qualify")
         result = {**result, "purpose": asked}
         _save(db_path, key, step="decide", findings=result, website=website)
         step = "decide"
@@ -128,14 +214,12 @@ def advance_icp(
     if step == "decide":
         findings = _findings(_row(db_path, key))
         if _ranking_failed(name, findings):
-            _save(db_path, key, step="qualify")
-            return {
-                "status": "error",
-                "message": "The model did not rank this company, so no note was written.",
-                "sent": False,
-                "step": "qualify",
-                "company": name,
-            }
+            if replacing is None:
+                _save(db_path, key, step="qualify")
+            return _fail(
+                "The model did not rank this company, so no note was written.",
+                "qualify",
+            )
         if _worth(name, findings):
             _save(db_path, key, step="draft")
             step = "draft"
@@ -156,13 +240,10 @@ def advance_icp(
             },
         )
         if result.get("error") or not result.get("draft"):
-            return {
-                "status": "error",
-                "message": str(result.get("error") or "The note could not be written."),
-                "sent": False,
-                "step": "draft",
-                "company": name,
-            }
+            return _fail(
+                str(result.get("error") or "The note could not be written."),
+                "draft",
+            )
         row = _save(
             db_path,
             key,
@@ -173,6 +254,306 @@ def advance_icp(
         return _view(row)
 
     return _view(_row(db_path, key))
+
+
+def qualify_known_company(
+    db_path: str | Path,
+    query: str,
+    manager: Any,
+    session_id: str = DESK_SESSION,
+) -> str | None:
+    """Qualify one company already on the desk.
+
+    A company in review, on the ICP list, or already in a workflow uses that
+    company's qualify step. A unique near miss of one of those names uses that
+    company. A qualify request that matches none, or several equally, returns a
+    plain reply and does not call the model. A message that is not a qualify
+    request returns None. This does not search for other companies, send a
+    note, or approve one.
+    """
+    parsed = _qualify_request(query)
+    if parsed is None:
+        return None
+    name, purpose = parsed
+    company = _company_on_desk(db_path, name)
+    if company is None:
+        return "No single company on the desk matches. Nothing was sent."
+    if not purpose:
+        row = get_workflow(db_path, company["company_name"])
+        if row is not None:
+            purpose = _purpose(_findings(row))
+    result = advance_icp(
+        db_path,
+        company,
+        manager,
+        purpose=purpose or DEFAULT_PURPOSE,
+        session_id=session_id,
+    )
+    message = str(result.get("message") or "").strip()
+    if not message:
+        message = f"{company['company_name']} could not be qualified. Nothing was sent."
+    if result.get("note_withheld"):
+        return message
+    return _reply_with_note(message, get_workflow(db_path, company["company_name"]))
+
+
+def pending_qualification(
+    db_path: str | Path,
+    session_id: str = DESK_SESSION,
+) -> dict[str, str] | None:
+    """The one purpose change waiting for yes or no in this session."""
+    resolved = ensure_workflow(db_path)
+    session = _session_id(session_id)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT company_name, purpose, previous_purpose
+            FROM qualify_confirmations
+            WHERE session_id = ?
+            """,
+            (session,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return {
+        "company_name": str(row["company_name"]),
+        "purpose": str(row["purpose"]),
+        "previous_purpose": str(row["previous_purpose"]),
+    }
+
+
+def preserved_company_notes(db_path: str | Path, company_name: str) -> list[dict[str, Any]]:
+    """Notes copied aside on this company before a later purpose replaced them."""
+    return _prior_notes(get_workflow(db_path, company_name))
+
+
+def answer_qualify_confirmation(
+    db_path: str | Path,
+    query: str,
+    manager: Any,
+    session_id: str = DESK_SESSION,
+) -> str | None:
+    """Yes runs the pending qualification. No leaves it. Anything else clears it."""
+    pending = pending_qualification(db_path, session_id)
+    if pending is None:
+        return None
+    choice = _confirmation_choice(query)
+    _clear_confirmation(db_path, session_id)
+    if choice == "yes":
+        return _run_confirmed_qualify(db_path, pending, manager, session_id)
+    if choice == "no":
+        return "Nothing was changed. Nothing was sent."
+    return None
+
+
+def _qualify_request(query: str) -> tuple[str, str] | None:
+    """A request to qualify one named company, and an optional purpose."""
+    text = re.sub(r"[\s.!?]+$", "", (query or "").strip())
+    match = re.match(
+        r"(?i)^(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?"
+        r"(?:please\s+)?qualify\s+(?P<rest>.+)$",
+        text,
+    )
+    if not match:
+        return None
+    rest = match.group("rest").strip(" \t\"'")
+    rest = re.sub(r"(?i)\s+please$", "", rest).strip()
+    purpose = ""
+    split = re.search(r"(?i)\s+for\s+(.+)$", rest)
+    if split:
+        purpose = split.group(1).strip()
+        rest = rest[: split.start()].strip()
+    rest = re.sub(r"(?i)^(?:the\s+)?company\s+", "", rest).strip()
+    if not company_key(rest):
+        return None
+    return rest, purpose
+
+
+def _company_on_desk(db_path: str | Path, name: str) -> dict[str, Any] | None:
+    """The stored company, when it is in review, on the ICP list, or in a workflow.
+
+    A unique closest name within two edits of the company key resolves to that
+    company. Zero matches, or several names at that same distance, do not.
+    """
+    key = company_key(name)
+    if not key:
+        return None
+    found = _exact_company(db_path, name)
+    if found is not None:
+        return found
+    near = _unique_near_name(db_path, key)
+    if near is None:
+        return None
+    return _exact_company(db_path, near)
+
+
+def _exact_company(db_path: str | Path, name: str) -> dict[str, Any] | None:
+    key = company_key(name)
+    if not key:
+        return None
+    workflow = get_workflow(db_path, name)
+    candidate = _pending_candidate(db_path, key)
+    seed = _seed_company(db_path, key)
+    if workflow is None and candidate is None and seed is None:
+        return None
+    source: dict[str, Any] = {}
+    if seed:
+        source.update(seed)
+    if candidate:
+        for field, value in candidate.items():
+            if value is None or value == "":
+                continue
+            source[field] = value
+    company_name = str(
+        source.get("company_name") or (workflow or {}).get("company_name") or name
+    ).strip()
+    website = str(source.get("website") or (workflow or {}).get("website") or "").strip()
+    return {
+        "company_name": company_name,
+        "website": website,
+        "industry": str(source.get("industry") or ""),
+        "employee_count": source.get("employee_count") or 0,
+        "funding_stage": str(source.get("funding_stage") or ""),
+        "has_cto": str(source.get("has_cto") or "unknown").strip().lower() or "unknown",
+        "acquired": str(source.get("acquired") or "unknown").strip().lower() or "unknown",
+    }
+
+
+def _unique_near_name(db_path: str | Path, key: str) -> str | None:
+    """The one desk name within two edits, when no other name is equally close."""
+    closest: list[str] = []
+    closest_distance = 3
+    seen: set[str] = set()
+    for label in _desk_names(db_path):
+        other = company_key(label)
+        if not other or other in seen or other == key:
+            continue
+        seen.add(other)
+        distance = _edit_distance(key, other, 2)
+        if distance is None:
+            continue
+        if distance < closest_distance:
+            closest = [label]
+            closest_distance = distance
+        elif distance == closest_distance:
+            closest.append(label)
+    if len(closest) != 1:
+        return None
+    return closest[0]
+
+
+def _desk_names(db_path: str | Path) -> list[str]:
+    """Company names in a workflow, in review, or on the ICP list."""
+    names: list[str] = []
+    resolved = ensure_workflow(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        rows = conn.execute("SELECT company_name FROM workflow_runs").fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    for row in rows:
+        label = str(row[0] or "").strip()
+        if label:
+            names.append(label)
+    for candidate in _pending_candidates(db_path):
+        label = str(candidate.get("company_name") or "").strip()
+        if label:
+            names.append(label)
+    from desk_settings import list_icp_seed
+
+    for row in list_icp_seed(db_path):
+        label = str(row.get("company_name") or "").strip()
+        if label:
+            names.append(label)
+    return names
+
+
+def _edit_distance(left: str, right: str, limit: int) -> int | None:
+    """Levenshtein distance, or None when it is past limit."""
+    if abs(len(left) - len(right)) > limit:
+        return None
+    previous = list(range(len(right) + 1))
+    for left_char in left:
+        current = [previous[0] + 1]
+        for j, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            current.append(
+                min(current[j - 1] + 1, previous[j] + 1, previous[j - 1] + cost)
+            )
+        previous = current
+    distance = previous[-1]
+    if distance > limit:
+        return None
+    return distance
+
+
+def _reply_with_note(message: str, row: dict[str, Any] | None) -> str:
+    """Start with the step sentence, then the stored note when one was saved."""
+    if row is None or row.get("step") not in WAITING:
+        return message
+    draft = str(row.get("draft") or "").strip()
+    if draft:
+        return f"{message}\n\n{draft}"
+    if row.get("step") == "not_a_fit":
+        return message
+    return f"{message}\n\nThe note text is not stored."
+
+
+def _pending_candidate(db_path: str | Path, key: str) -> dict[str, Any] | None:
+    for found in _pending_candidates(db_path):
+        if company_key(str(found.get("company_name") or "")) == key:
+            return found
+    return None
+
+
+def _pending_candidates(db_path: str | Path) -> list[dict[str, Any]]:
+    resolved = resolve_db_path(db_path)
+    if not resolved.exists():
+        return []
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT title, payload_json
+            FROM pending_actions
+            WHERE action_type = 'icp_candidate' AND status = 'pending'
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    found_rows: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"] or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        label = str(payload.get("company_name") or row["title"] or "").strip()
+        if not label:
+            continue
+        found = dict(payload)
+        found["company_name"] = label
+        found_rows.append(found)
+    return found_rows
+
+
+def _seed_company(db_path: str | Path, key: str) -> dict[str, Any] | None:
+    from desk_settings import list_icp_seed
+
+    for row in list_icp_seed(db_path):
+        if company_key(str(row.get("company_name") or "")) == key:
+            return row
+    return None
 
 
 def decide_icp_draft(db_path: str | Path, action_id: str, approve: bool) -> dict[str, Any]:
@@ -356,6 +737,7 @@ def _save(
     draft: str | None = None,
     action_id: str | None = None,
     website: str | None = None,
+    prior_notes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     resolved = ensure_workflow(db_path)
     fields = ["step = ?", "updated_at = ?"]
@@ -369,6 +751,9 @@ def _save(
     if action_id is not None:
         fields.append("action_id = ?")
         values.append(action_id)
+    if prior_notes is not None:
+        fields.append("prior_notes_json = ?")
+        values.append(json.dumps(prior_notes))
     if website:
         fields.append("website = ?")
         values.append(website)
@@ -386,6 +771,151 @@ def _save(
     if row is None:
         raise RuntimeError(f"Workflow row {key} disappeared.")
     return row
+
+
+def _normalize_purpose(purpose: str) -> str:
+    text = (purpose or "").strip().casefold()
+    text = text.replace("-", " ")
+    text = re.sub(r"[.!?]+$", "", text).strip()
+    text = re.sub(r"\s+", " ", text)
+    return text
+
+
+def _is_cto_engagement(purpose: str) -> bool:
+    """True for the default CTO purpose and the same fractional-CTO engagement."""
+    return _CTO_ENGAGEMENT.fullmatch(_normalize_purpose(purpose)) is not None
+
+
+def _same_purpose(asked: str, stored: str) -> bool:
+    """Trimmed, case-insensitive equality. The CTO engagement is one purpose."""
+    left = _normalize_purpose(asked) or _normalize_purpose(DEFAULT_PURPOSE)
+    right = _normalize_purpose(stored) or _normalize_purpose(DEFAULT_PURPOSE)
+    if left == right:
+        return True
+    return _is_cto_engagement(left) and _is_cto_engagement(right)
+
+
+def _confirm_purpose_message(name: str, stored: str, asked: str) -> str:
+    return (
+        f"{name} already has a note for {stored}. "
+        f"Qualify it for {asked}? Reply yes to run that. "
+        f"The saved note stays. Nothing will be sent."
+    )
+
+
+def _session_id(session_id: str) -> str:
+    return (session_id or "").strip() or DESK_SESSION
+
+
+def _confirmation_choice(query: str) -> str | None:
+    """Yes, yes please, or y. No is no. Any other sentence is neither."""
+    text = re.sub(r"[\s.!?]+$", "", (query or "").strip())
+    text = text.replace(",", " ")
+    text = re.sub(r"\s+", " ", text).strip().casefold()
+    if text in {"y", "yes", "yes please"}:
+        return "yes"
+    if text == "no":
+        return "no"
+    return None
+
+
+def _remember_confirmation(
+    db_path: str | Path,
+    session_id: str,
+    company_name: str,
+    purpose: str,
+    previous_purpose: str,
+) -> None:
+    resolved = ensure_workflow(db_path)
+    now = datetime.now(UTC).isoformat()
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO qualify_confirmations (
+                    session_id, company_name, purpose, previous_purpose, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    company_name = excluded.company_name,
+                    purpose = excluded.purpose,
+                    previous_purpose = excluded.previous_purpose,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    _session_id(session_id),
+                    company_name,
+                    purpose,
+                    previous_purpose,
+                    now,
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def _clear_confirmation(db_path: str | Path, session_id: str) -> None:
+    resolved = ensure_workflow(db_path)
+    conn = sqlite3.connect(resolved, timeout=30.0)
+    try:
+        with conn:
+            conn.execute(
+                "DELETE FROM qualify_confirmations WHERE session_id = ?",
+                (_session_id(session_id),),
+            )
+    finally:
+        conn.close()
+
+
+def _run_confirmed_qualify(
+    db_path: str | Path,
+    pending: dict[str, str],
+    manager: Any,
+    session_id: str,
+) -> str:
+    name = str(pending.get("company_name") or "").strip()
+    purpose = str(pending.get("purpose") or "").strip() or DEFAULT_PURPOSE
+    company = _company_on_desk(db_path, name)
+    if company is None:
+        return f"{name} is not on the desk. Nothing was changed. Nothing was sent."
+    result = advance_icp(
+        db_path,
+        company,
+        manager,
+        purpose=purpose,
+        confirmed=True,
+        session_id=session_id,
+    )
+    message = str(result.get("message") or "").strip()
+    if not message:
+        message = f"{company['company_name']} could not be qualified. Nothing was sent."
+    if result.get("note_withheld"):
+        return message
+    text = _reply_with_note(message, get_workflow(db_path, company["company_name"]))
+    lowered = text.lower()
+    if (
+        "nothing was sent" not in lowered
+        and "not been sent" not in lowered
+        and "was not sent" not in lowered
+        and "not sent" not in lowered
+    ):
+        text = f"{text}\n\nNothing was sent."
+    return text
+
+
+def _prior_notes(row: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not row:
+        return []
+    raw = row.get("prior_notes_json") or ""
+    if not str(raw).strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
 
 
 def _purpose(findings: dict[str, Any]) -> str:

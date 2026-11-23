@@ -72,16 +72,16 @@ class OutreachDraftSkill(Skill):
 
 def _queue_company(db_path: str, company_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Leave a company note in To review. The note is not sent."""
-    from icp_workflow import company_key
+    from icp_workflow import get_workflow
     from priority_inbox import emit_priority_action
 
-    saved = _saved_draft(db_path, company_name)
+    purpose = str(payload.get("purpose") or "").strip()
+    saved = _saved_draft(db_path, company_name, purpose)
     if saved:
         return saved
 
     website = str(payload.get("website") or "").strip()
     rationale = str(payload.get("rationale") or "").strip()
-    purpose = str(payload.get("purpose") or "").strip()
     recipient = _lookup_recipient(company_name, website)
     body = _body(company_name, website, purpose, rationale, recipient)
     try:
@@ -98,7 +98,11 @@ def _queue_company(db_path: str, company_name: str, payload: dict[str, Any]) -> 
                 "rationale": rationale,
             },
             priority=1,
-            source_key=f"icp-outreach:{company_key(company_name)}",
+            source_key=_draft_source_key(
+                company_name,
+                purpose,
+                get_workflow(db_path, company_name),
+            ),
             db_path=str(db_path),
         )
     except Exception as exc:
@@ -120,21 +124,55 @@ def _latest_kept(db_path: str) -> tuple[str, str]:
     return str(first.get("title") or ""), str(first.get("url") or "")
 
 
-def _saved_draft(db_path: str, company_name: str) -> dict[str, Any] | None:
-    """Return a note that was already stored. Reading it does not search."""
-    from icp_workflow import company_key
+def _saved_draft(
+    db_path: str,
+    company_name: str,
+    purpose: str = "",
+) -> dict[str, Any] | None:
+    """Return a note already stored for this purpose. Reading it does not search."""
+    from icp_workflow import _findings
+    from icp_workflow import _purpose
+    from icp_workflow import _same_purpose
     from icp_workflow import get_workflow
 
     row = get_workflow(db_path, company_name)
-    if row and str(row.get("draft") or "").strip():
-        return {
-            "draft": str(row["draft"]),
-            "title": company_name,
-            "sent": False,
-            "action_id": str(row.get("action_id") or ""),
-        }
-    source_key = f"icp-outreach:{company_key(company_name)}"
-    return _saved_action(db_path, company_name, source_key)
+    draft = str((row or {}).get("draft") or "").strip()
+    if row and draft:
+        stored = _purpose(_findings(row))
+        if not purpose or _same_purpose(purpose, stored):
+            return {
+                "draft": draft,
+                "title": company_name,
+                "sent": False,
+                "action_id": str(row.get("action_id") or ""),
+            }
+    return _saved_action(db_path, company_name, _draft_source_key(company_name, purpose, row))
+
+
+def _draft_source_key(company_name: str, purpose: str, row: dict[str, Any] | None) -> str:
+    """A new purpose gets its own note. The earlier note keeps the original key."""
+    import json
+
+    from icp_workflow import _normalize_purpose
+    from icp_workflow import _same_purpose
+    from icp_workflow import company_key
+
+    base = f"icp-outreach:{company_key(company_name)}"
+    if not row or not purpose:
+        return base
+    raw = row.get("prior_notes_json") or ""
+    try:
+        prior = json.loads(raw) if str(raw).strip() else []
+    except json.JSONDecodeError:
+        return base
+    if not isinstance(prior, list):
+        return base
+    for item in prior:
+        if isinstance(item, dict) and not _same_purpose(purpose, str(item.get("purpose") or "")):
+            extra = _normalize_purpose(purpose)
+            if extra:
+                return f"{base}:{extra}"
+    return base
 
 
 def _saved_action(db_path: str, company_name: str, source_key: str) -> dict[str, Any] | None:

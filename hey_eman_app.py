@@ -51,17 +51,25 @@ from desk_work import submit_skill_request
 from chat_memory import load_turns
 from chat_memory import record_turn
 from icp_workflow import advance_icp
+from icp_workflow import answer_qualify_confirmation
 from icp_workflow import decide_icp_draft
 from icp_workflow import describe_workflow
 from icp_workflow import get_workflow
 from icp_workflow import list_company_notes
+from icp_workflow import qualify_known_company
 from icp_workflow import refresh_icp_search
 from icp_workflow import track_company_note
 from executive_summary import generate_executive_summary
 from executive_summary import mail_origin
 from llm_agent import HeyEmanAgent
+from desk_mcp_server import start_if_enabled
 from manager import Manager
+from mcp_registry import add_mcp_server
+from mcp_registry import health_message
+from mcp_registry import mcp_servers
+from mcp_registry import remove_mcp_server
 from notifications import daily_brief_notifier
+from telegram_inbox import start_if_configured
 from open_loops import close_open_loop
 from open_loops import list_open_loops
 from open_loops import loop_url
@@ -968,6 +976,8 @@ def _render_research(db_path: str) -> None:
         st.number_input("Days of mail to scan", min_value=1, max_value=30, step=1, key="desk_mail_days")
         # Stays here. Mail and Now are results. Do not move this list without explicit consent.
         _render_billers(db_path)
+        # Connections stay in this scroll, after the biller list. They are not a second bills list.
+        _render_mcp_connections(db_path)
         st.number_input(
             "Days of research to include in the brief",
             min_value=1,
@@ -1039,6 +1049,52 @@ def _render_research(db_path: str) -> None:
                 result = remove_icp_company(db_path, row["company_name"])
                 st.session_state.last_ack = result.get("message") or "Removed."
                 st.rerun()
+
+
+def _render_mcp_connections(db_path: str) -> None:
+    """Saved MCP aliases. The env var field is a name, never the key."""
+    servers = mcp_servers(db_path)
+    st.divider()
+    st.markdown(f"**MCP connections ({len(servers)})**")
+    st.caption(
+        "A skill calls the connection name. Blogger calls insight_vault. "
+        "Adding a name that is already here updates its address. "
+        "The env var is the name of a key on this machine, not the key itself."
+    )
+    with st.form("add-mcp", clear_on_submit=True):
+        name = st.text_input("Connection name", placeholder="insight_vault")
+        url = st.text_input("Base URL", placeholder="http://127.0.0.1:8765")
+        auth_env = st.text_input("API key env var", placeholder="INSIGHT_VAULT_API_KEY")
+        if st.form_submit_button("Add connection"):
+            result = add_mcp_server(db_path, name, url, auth_env)
+            if result.get("status") == "ok":
+                st.session_state.last_ack = result.get("message") or "Connection saved."
+                st.rerun()
+            st.caption(result.get("message") or "That connection was not saved.")
+    if not servers:
+        st.caption("No connections yet.")
+        return
+    for server in servers:
+        alias = server["alias"]
+        env_name = server["auth_env"] or "no key"
+        info, check, remove = st.columns([4, 1, 1])
+        info.markdown(f"**{alias}** · `{server['base_url']}` · `{env_name}`")
+        if check.button("Check health", key=f"mcp-check-{alias}", use_container_width=True):
+            try:
+                note = health_message(server)
+            except Exception:
+                note = f"{alias} health check failed."
+            st.session_state[f"mcp_health_{alias}"] = note
+        if remove.button("Remove", key=f"mcp-del-{alias}", use_container_width=True):
+            result = remove_mcp_server(db_path, alias)
+            st.session_state.last_ack = result.get("message") or "Removed."
+            health_key = f"mcp_health_{alias}"
+            if health_key in st.session_state:
+                del st.session_state[health_key]
+            st.rerun()
+        note = st.session_state.get(f"mcp_health_{alias}")
+        if note:
+            st.caption(note)
 
 
 def _render_billers(db_path: str, *, expanded: bool = True) -> None:
@@ -1497,6 +1553,15 @@ def _render_runs(manager: Manager) -> None:
 # ---------------------------------------------------------------------------
 
 def _answer(query: str, manager: Manager, agent: HeyEmanAgent) -> str:
+    confirmed = answer_qualify_confirmation(
+        str(manager._db_path),
+        query,
+        manager,
+        session_id=SESSION_ID,
+    )
+    if confirmed is not None:
+        record_turn(SESSION_ID, query, confirmed, db_path=str(manager._db_path))
+        return confirmed
     if is_skill_request(query):
         result = submit_skill_request(str(manager._db_path), query)
         answer = result.get("message") or "Say what the skill should do."
@@ -1517,6 +1582,15 @@ def _answer(query: str, manager: Manager, agent: HeyEmanAgent) -> str:
         answer = _ask_ceo(query, manager)
         record_turn(CEO_SESSION_ID, query, answer, db_path=str(manager._db_path))
         return answer
+    qualified = qualify_known_company(
+        str(manager._db_path),
+        query,
+        manager,
+        session_id=SESSION_ID,
+    )
+    if qualified is not None:
+        record_turn(SESSION_ID, query, qualified, db_path=str(manager._db_path))
+        return qualified
     if os.getenv("OPENAI_API_KEY"):
         return agent.respond(query, session_id=SESSION_ID)
     answer = _handle_query(query, manager)
@@ -1776,6 +1850,10 @@ def _toast_ack() -> None:
 def main() -> None:
     st.set_page_config(page_title="Enaam", layout="wide", initial_sidebar_state="expanded")
     _load_dotenv()
+    # One Telegram thread when the bot is configured, and the local MCP port
+    # only when KHURSHEED_MCP_SERVER=1. Both ignore later Streamlit reruns.
+    start_if_configured()
+    start_if_enabled()
     _require_password()
 
     _inject_base_css()

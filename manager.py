@@ -60,7 +60,7 @@ class Manager:
         self._initialize_database()
         
         # Initialize MCP registry and skill context
-        self._mcp_registry = MCPRegistry.load()
+        self._mcp_registry = MCPRegistry.load(db_path=self._db_path)
         self._skill_context = SkillContext(self, self._mcp_registry)
 
     @property
